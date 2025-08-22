@@ -11,13 +11,17 @@ import asyncio
 from pydantic import BaseModel, Field
 from langgraph.types import Command
 from langchain_core.tools import tool, InjectedToolCallId
+from langgraph.graph import START, END, StateGraph
+from langgraph.prebuilt import tools_condition, ToolNode
 
 # Graph state
 class SREAgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
+    app_summary: str
     insights: Annotated[list[str], operator.add]
     prev_steps: Annotated[list[str], operator.add]
     response: str
+    final_output: str
 
 # Pydantic class to manage the structured output from the summarise node
 class UpdateAgentData(BaseModel):
@@ -110,27 +114,35 @@ summarise_prompt = """
 
 llm_with_strct_output = gpt5mini.with_structured_output(UpdateAgentData)
 
+def get_insights_str(state):
+    """Return a string with the formatted list of insights gathered during exploration"""
+    if len(state["insights"]) > 0:
+        return "\n- ".join([""] + state["insights"])
+    else:
+        return "No insights yet"
+    
+def get_prev_steps_str(state):
+    """Return a string with the formatted list of previous steps performed during exploration"""
+    if len(state["prev_steps"]) > 0:
+        return "\n- ".join([""] + state["prev_steps"])
+    else:
+        return "No previous steps yet"
+
 # Node used to summarise the infos given the two previous messages
 async def summarise(state: SREAgentState):
 
     # Gather last two messages (tool call + tool response)
     last_messages = state["messages"][-2:]
 
-    if len(state["insights"]) > 0:
-        insights_str = "\n- ".join([""] + state["insights"])
-    else:
-        insights_str = "No insights yet"
-
-    if len(state["prev_steps"]) > 0:
-        prev_step_str = "\n- ".join([""] + state["prev_steps"])
-    else:
-        prev_step_str = "No previous steps yet"
+    insights_str = get_insights_str(state)
+    prev_step_str = get_prev_steps_str(state)
 
     prompt = HumanMessage(content=summarise_prompt.format(prev_steps = prev_step_str, insights=insights_str, last_two_messages=last_messages))
 
     data = llm_with_strct_output.invoke([prompt])
 
     return {"insights" : [data.insight], "prev_steps" : [data.prev_step]}
+
 
 # Tool used to submit the final response
 @tool
@@ -149,7 +161,7 @@ async def submit_final_diagnosis(
     Returns:
         Command to update state and end workflow
     """
-    final_response = f"{diagnosis}\n\nReasoning: {reasoning}"
+    final_response = f"Diagnosis:\n{diagnosis}\n\nReasoning:\n{reasoning}"
     
     return Command(
         update={
@@ -161,23 +173,20 @@ async def submit_final_diagnosis(
                 )
             ]
         },
-        goto="__end__" # End the loop cycle
+        goto="format-output" # End the loop cycle
     )
 
 # Append the tool for submission to the list of tools (MCP servers)
 completion_tool = submit_final_diagnosis
 tools_with_completion = tools + [completion_tool]
+# Append the tool for submission to the list of tools (MCP servers)
+completion_tool = submit_final_diagnosis
+tools_with_completion = tools + [completion_tool]
 
 async def sreAgent(state: SREAgentState):
-    if len(state["insights"]) > 0:
-        insights_str = "\n- ".join([""] + state["insights"])
-    else:
-        insights_str = "No insights yet"
-
-    if len(state["prev_steps"]) > 0:
-        prev_step_str = "\n- ".join([""] + state["prev_steps"])
-    else:
-        prev_step_str = "No previous steps yet"
+    
+    insights_str = get_insights_str(state)
+    prev_step_str = get_prev_steps_str(state)
 
     prompt = HumanMessage(content=sre_agent_prompt.format(
         prev_steps=prev_step_str, 
@@ -189,9 +198,25 @@ async def sreAgent(state: SREAgentState):
     llm_with_completion_tools = gpt5mini.bind_tools(tools_with_completion, parallel_tool_calls=False)
     return {"messages": [llm_with_completion_tools.invoke([prompt])]}
 
-from langgraph.graph import START, END, StateGraph
-from langgraph.prebuilt import tools_condition, ToolNode
-from IPython.display import Image, display
+async def format_response(state: SREAgentState):
+
+    insights_str = get_insights_str(state)
+    prev_step_str = get_prev_steps_str(state)
+
+    message = "**Results of the analysis**\n\n"
+
+    message += "Steps performed:\n"
+    message += prev_step_str
+
+    message += "Insights gathered:\n"
+    message += insights_str
+
+    message += "\n\nFinal report\n"
+
+    message += state["response"]
+
+    return {"final_output" : message}
+
 
 # Build the graph
 builder = StateGraph(SREAgentState)
@@ -200,6 +225,7 @@ builder = StateGraph(SREAgentState)
 builder.add_node("sre-agent", sreAgent)
 builder.add_node("tools", ToolNode(tools_with_completion)) # Tool node is executing the tool called in the previous message
 builder.add_node("summarise", summarise) # Node to reduce the raw data into a schema
+builder.add_node("format-output", format_response)
 
 # Add edges
 builder.add_edge(START, "sre-agent")
@@ -215,7 +241,7 @@ builder.add_conditional_edges(
 def after_tools_condition(state: SREAgentState):
     # If response is filled, investigation is complete (end of the workflow)
     if state.get("response"):
-        return END
+        return "format-output"
     return "summarise"
 
 builder.add_conditional_edges(
@@ -223,7 +249,7 @@ builder.add_conditional_edges(
     after_tools_condition,
     {
         "summarise": "summarise",
-        END: END
+        "format-output": "format-output"
     }
 )
 
