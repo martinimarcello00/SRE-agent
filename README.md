@@ -29,7 +29,6 @@ graph TD
     
     J --> I
     
-    %% Styling with colors and emojis
     classDef startEnd fill:#e1f5fe,stroke:#01579b,stroke-width:3px,color:#000
     classDef agent fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
     classDef decision fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
@@ -46,7 +45,7 @@ graph TD
 ### Key Components
 
 - **🧠 LLM Agents**: GPT-5, GPT-5-mini, and Gemini 2.5 Flash for reasoning and decision-making
-- **🔧 MCP Client**: Provides kubectl tools to the LLM through Model Context Protocol
+- **🔧 MCP Client**: Provides kubectl, Prometheus and ChromaDb tools to the LLM through Model Context Protocol
 - **📊 LangGraph**: Orchestrates the investigation workflow with state management
 - **🔍 ReAct Loop**: Agent → Tools → Agent cycle until diagnosis is complete
 - **☸️ Kubernetes Integration**: Direct cluster access via MCP server
@@ -91,6 +90,12 @@ GOOGLEAI_API_KEY=your_google_ai_api_key_here
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_API_KEY=your_langsmith_api_key_here
 LANGCHAIN_PROJECT=sre-agent
+
+# ChromaDB storage path
+CHROMADB_STORAGE_PATH=/path/to/your/chromadb/storage
+
+# Prometheus server URL (if using Prometheus monitoring)
+PROMETHEUS_SERVER_URL=http://localhost:9090
 
 # Results output path
 RESULTS_PATH=/path/to/your/results/folder
@@ -237,3 +242,20 @@ The project includes LangGraph Studio configuration for visual development:
 - **Console**: Real-time progress and results
 - **Text Files**: Timestamped investigation logs (`results/` folder)
 - **Markdown**: Formatted reports with structure (mitigation agent)
+
+## 🙏 Acknowledgments
+
+### Academic Context
+This project was developed as part of the **Multidisciplinary Project** course at **Politecnico di Milano**, supervised by:
+- **Dr. Matteo Ferroni**
+- **Prof. Marco Domenico Santambrogio**
+
+### Open Source Projects
+- [**Microsoft AIOpsLab**](https://github.com/microsoft/AIOpsLab): Testbed creation and fault injection framework for chaos engineering
+- [**LangChain & LangGraph**](https://github.com/langchain-ai): Workflow orchestration and agent framework
+- [**Poetry (Python Package Manager)**](https://github.com/python-poetry/poetry): A tool for dependency management and packaging in Python.
+
+### MCP (Model Context Protocol) Servers
+- **[mcp-server-kubernetes](https://github.com/Flux159/mcp-server-kubernetes)**: Kubernetes cluster interaction via kubectl
+- **[chroma-mcp](https://github.com/chroma-core/chroma-mcp)**: ChromaDB vector database integration for RAG
+- **[prometheus-mcp](https://github.com/idanfishman/prometheus-mcp)**: Prometheus metrics server integration
