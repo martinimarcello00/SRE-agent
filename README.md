@@ -64,7 +64,7 @@ graph TD
 2. **Reduced Context Agent**: Limited message window for efficiency
 3. **Structured Schema Agent**: Token-optimized with structured state management
 4. **Mitigation Plan Agent**: Extended workflow with automated remediation planning
-
+5. **Mitigation Plan Agent with RAG**: Extended workflow with incident retrieval and automated remediation planning
 
 ## 🚀 Quick Start
 
@@ -220,7 +220,7 @@ The project includes LangGraph Studio configuration for visual development:
 - **Pros**: Balanced efficiency and context
 - **Cons**: May lose important historical context
 
-### 3. Structured Schema Agent ⭐
+### 3. Structured Schema Agent 
 - **Context**: Structured state with insights/steps
 - **Pros**: Minimal token usage, maintains key information
 - **Cons**: Slight complexity in state management
@@ -229,6 +229,17 @@ The project includes LangGraph Studio configuration for visual development:
 - **Context**: Structured + remediation planning
 - **Pros**: Complete SRE workflow
 - **Cons**: Highest complexity
+
+### 5. Mitigation Plan Agent with RAG
+- **Context**: Structured + incident retrieval + remediation planning
+- **Features**: 
+  - Queries ChromaDB for similar previous incidents
+  - Reuses proven mitigation strategies when applicable
+  - Stores new incidents automatically for future reference
+  - Marks incidents as "already happened" when found in knowledge base
+- **Pros**: Complete SRE workflow with organizational learning
+- **Cons**: Requires ChromaDB setup and maintenance
+
 
 ## 📈 Results & Output
 
