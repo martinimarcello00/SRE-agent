@@ -4,7 +4,27 @@
 
 Integrates LangChain, LangGraph, and Model Context Protocol (MCP) to enable automated Site Reliability Engineering tasks in cloud-native environments. The agent uses a **ReAct pattern** (Reason + Act) to autonomously investigate Kubernetes cluster issues and provide diagnostic reports.
 
-## 🏗️ Architecture Overview
+## 📁 Project Structure
+
+```
+SRE-agent/
+├── 📓 SRE-ReAct-agent.ipynb                    # Baseline & structured schema agents
+├── 📓 SRE-ReAct-agent-mitigation-plan.ipynb   # Mitigation planning workflow
+├── 📓 SRE-ReAct-agent-fetch-prev-incidents.ipynb # RAG-enabled incident retrieval
+├── 📋 pyproject.toml                          # Poetry dependencies & configuration
+├── 🔧 .env                                   # Environment variables (create from template)
+├── 📁 studio/
+│   ├── 🐍 react_sre_strctured.py             # LangGraph structured schema implementation
+│   ├── 🐍 react_sre_strctured_mitigation.py  # LangGraph mitigation plan implementation
+│   └── 📋 langgraph.json                     # LangGraph Studio configuration
+├── 📁 results/                               # Generated investigation reports
+│   ├── 📄 2025-08-28_11-09-15.md            # Example timestamped report
+│   └── 📄 ...                               # Additional investigation outputs
+├── 📊 report.pdf                            # PDF report explaining the detailed implementation
+└── 📄 README.md
+```
+
+## 🏗️ Architecture Overview (Agent with mitigation plan)
 
 ```mermaid
 graph TD
