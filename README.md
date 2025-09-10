@@ -64,7 +64,7 @@ graph TD
 
 ### Key Components
 
-- **🧠 LLM Agents**: GPT-5, GPT-5-mini, and Gemini 2.5 Flash for reasoning and decision-making
+- **🧠 LLM Agents**: GPT-5-mini for reasoning and decision-making
 - **🔧 MCP Client**: Provides kubectl, Prometheus and ChromaDb tools to the LLM through Model Context Protocol
 - **📊 LangGraph**: Orchestrates the investigation workflow with state management
 - **🔍 ReAct Loop**: Agent → Tools → Agent cycle until diagnosis is complete
