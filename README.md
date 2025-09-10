@@ -257,8 +257,8 @@ The project includes LangGraph Studio configuration for visual development:
   - Reuses proven mitigation strategies when applicable
   - Stores new incidents automatically for future reference
   - Marks incidents as "already happened" when found in knowledge base
-- **Pros**: Complete SRE workflow with organizational learning
-- **Cons**: Requires ChromaDB setup and maintenance
+- **Pros**: Complete SRE workflow with information retrieval
+- **Cons**: High token usage
 
 
 ## 📈 Results & Output
