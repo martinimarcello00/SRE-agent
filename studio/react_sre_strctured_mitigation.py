@@ -27,7 +27,7 @@ class SREAgentState(TypedDict):
     final_output: str
     mitigation_plan_overview: str
     mitigation_steps: List[str]
-    is_already_happened: bool
+    has_already_happened: bool
 
 # Pydantic class to manage the structured output from the summarise node
 class UpdateAgentData(BaseModel):
@@ -287,7 +287,7 @@ async def mitigation_planner(state: SREAgentState):
     return {
         "mitigation_plan_overview" : mitigation_response['structured_response'].mitigation_plan_overview,
         "mitigation_steps" : mitigation_response['structured_response'].mitigation_steps,
-        "is_already_happened" : mitigation_response['structured_response'].is_previous_incident
+        "has_already_happened" : mitigation_response['structured_response'].is_previous_incident
     }
 
 # Store the incident report in the RAG (ChromaDB)
@@ -351,7 +351,7 @@ builder.add_conditional_edges(
 
 # If is a new incident, store in VectorDB
 def new_incident_condition(state: SREAgentState):
-    if state['is_already_happened']:
+    if state['has_already_happened']:
         return END
     else:
         return "store-incident-report"
