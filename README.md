@@ -1,4 +1,4 @@
-# 🚀 SRE-agent
+# 🚀 Agent-Based SRE: Automated Diagnosis and Mitigation in K8s
 
 **Autonomous agent for Kubernetes incident detection, diagnosis, and mitigation using LLMs and modular workflows.**
 
