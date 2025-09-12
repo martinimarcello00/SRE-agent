@@ -21,6 +21,7 @@ SRE-agent/
 │   ├── 📄 2025-08-28_11-09-15.md            # Example timestamped report
 │   └── 📄 ...                               # Additional investigation outputs
 ├── 📊 report.pdf                            # PDF report explaining the detailed implementation
+├── 📈 slide-deck.pdf                        # Concise presentation slides summarizing the SRE agent design & results
 └── 📄 README.md
 ```
 
