@@ -1,6 +1,9 @@
 from langchain_openai import ChatOpenAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 from typing import TypedDict, List, Literal, Annotated
 from langgraph.graph.message import add_messages
 from langchain_core.messages.utils import AnyMessage
@@ -13,6 +16,10 @@ from langgraph.types import Command
 from langchain_core.tools import tool, InjectedToolCallId
 from langgraph.graph import START, END, StateGraph
 from langgraph.prebuilt import tools_condition, ToolNode
+from langchain_core.messages import AIMessage
+from collections import Counter
+
+import os
 
 # Graph state
 class SREAgentState(TypedDict):
@@ -22,6 +29,7 @@ class SREAgentState(TypedDict):
     prev_steps: Annotated[list[str], operator.add]
     response: str
     final_output: str
+    tool_calls_stats: dict
 
 # Pydantic class to manage the structured output from the summarise node
 class UpdateAgentData(BaseModel):
@@ -34,6 +42,9 @@ class UpdateAgentData(BaseModel):
 # Define LLM
 gpt5mini = ChatOpenAI(model="gpt-5-mini")
 
+prometheus_URL = os.environ.get("PROMETHEUS_SERVER_URL")
+
+
 mcp_client = MultiServerMCPClient(
     {
         "kubernetes" : {
@@ -42,6 +53,14 @@ mcp_client = MultiServerMCPClient(
             "transport": "stdio",
             "env": {
                 "ALLOW_ONLY_NON_DESTRUCTIVE_TOOLS": "true"
+            }
+        },
+        "prometheus": { # https://github.com/idanfishman/prometheus-mcp
+            "command": "npx",
+            "args": ["prometheus-mcp@latest", "stdio"],
+            "transport": "stdio",
+            "env": {
+                "PROMETHEUS_URL": str(prometheus_URL)
             }
         }
     }
@@ -56,7 +75,7 @@ async def get_MCP_tools(client):
 
     tools = []
     for tool in mcp_tools:
-        if tool.name in tools_allowed:
+        if tool.name in tools_allowed or "prometheus" in tool.name:
             tools.append(tool)
 
     return tools
@@ -198,23 +217,65 @@ async def sreAgent(state: SREAgentState):
     llm_with_completion_tools = gpt5mini.bind_tools(tools_with_completion, parallel_tool_calls=False)
     return {"messages": [llm_with_completion_tools.invoke([prompt])]}
 
+# Compute tool calls stats string
+def get_stats_str(state):
+    """Return a string with the stats of the tool calls formatted as markdown table (tool name | count)"""
+    # Handle case where key doesn't exist yet
+    tool_calls_stats = state.get("tool_calls_stats", {})
+    if len(tool_calls_stats) > 0:
+        table = "| Tool Name | Count |\n|-----------|-------|\n"
+        for tool, count in tool_calls_stats.items():
+            table += f"| {tool} | {count} |\n"
+        return table
+    else:
+        return "No tool calls stats"
+
+# Get the tool calls stats
+def count_tool_calls(state: SREAgentState):
+    """
+    Get tool calls statistics
+    """
+    # Extract tool names from ToolMessage objects
+    tool_calls = []
+    for msg in state["messages"]:
+
+        if isinstance(msg, AIMessage):
+            if hasattr(msg, 'additional_kwargs'):
+                if "tool_calls" in msg.additional_kwargs:
+                    for call in msg.additional_kwargs['tool_calls']:
+                        if "function" in call:
+                            if "name" in call["function"]:
+                                tool_calls.append(call["function"]["name"])
+
+    # Count occurrences
+    counts = Counter(tool_calls)
+
+    return {"tool_calls_stats" : dict(counts)}
+
 async def format_response(state: SREAgentState):
 
     insights_str = get_insights_str(state)
     prev_step_str = get_prev_steps_str(state)
+    tool_calls_table = get_stats_str(state)
 
-    message = "**Results of the analysis**\n\n"
+    message = "# 📝 Results of the Analysis\n\n"
 
-    message += "Steps performed:\n"
-    message += prev_step_str
+    # Steps performed
+    message += "## 🔍 Steps Performed\n"
+    message += prev_step_str.strip() + "\n\n"
 
-    message += "Insights gathered:\n"
-    message += insights_str
+    # Insights
+    message += "## 💡 Insights Gathered\n"
+    message += insights_str.strip() + "\n\n"
 
-    message += "\n\nFinal report\n"
+    # Final root cause
+    message += "## 🚨 Final Report (Root Cause)\n"
+    message += f"> {state['response'].strip()}\n\n"
 
-    message += state["response"]
-
+    # Tool call stats
+    message += "## 📊 Tool Calls Statistics\n"
+    message += tool_calls_table.strip() + "\n\n"
+    
     return {"final_output" : message}
 
 
@@ -226,6 +287,7 @@ builder.add_node("sre-agent", sreAgent)
 builder.add_node("tools", ToolNode(tools_with_completion)) # Tool node is executing the tool called in the previous message
 builder.add_node("summarise", summarise) # Node to reduce the raw data into a schema
 builder.add_node("format-output", format_response)
+builder.add_node("tool-call-stats", count_tool_calls)
 
 # Add edges
 builder.add_edge(START, "sre-agent")
@@ -241,7 +303,7 @@ builder.add_conditional_edges(
 def after_tools_condition(state: SREAgentState):
     # If response is filled, investigation is complete (end of the workflow)
     if state.get("response"):
-        return "format-output"
+        return "tool-call-stats"
     return "summarise"
 
 builder.add_conditional_edges(
@@ -249,12 +311,15 @@ builder.add_conditional_edges(
     after_tools_condition,
     {
         "summarise": "summarise",
-        "format-output": "format-output"
+        "tool-call-stats": "tool-call-stats"
     }
 )
 
 # After summarise, continue investigation (go to sre-agent)
 builder.add_edge("summarise", "sre-agent")
+
+# After computing the stats, format the markdown output
+builder.add_edge("tool-call-stats", "format-output")
 
 # Compile the graph
 graph = builder.compile()
