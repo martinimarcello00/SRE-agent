@@ -1,5 +1,6 @@
 from prometheus_api_client import PrometheusConnect
 from kubernetes import client, config
+import logging
 
 class PrometheusAPI:
 
@@ -55,7 +56,7 @@ class PrometheusAPI:
         try:
             self.prometheusClient = PrometheusConnect(self.url, disable_ssl=True)
         except Exception as e:
-            print("Error connecting to prometheus server: ", e)
+            logging.error("Error connecting to prometheus server: ", e)
         
         # Create kubernetes client
         config.load_kube_config()
