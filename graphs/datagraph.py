@@ -1,6 +1,7 @@
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
 import os
+import logging
 
 class DataGraph():
     def __init__(self, uri:str, username:str, pw:str) -> None:
@@ -9,13 +10,13 @@ class DataGraph():
         try:
             self.driver = GraphDatabase.driver(uri = uri, auth = auth)
         except Exception as e:
-            print("Error creating the driver: ", e)
+            logging.error("Error creating the driver: ", e)
 
     def close(self):
         """Close the connection to the kubernetes driver"""
         if self.driver is not None:
             self.driver.close()
-        print("neo4j driver closed")
+        logging.info("neo4j driver closed")
         
     def query(self, query, parameters=None, db=None):
         """Query neo4j database"""
@@ -27,7 +28,7 @@ class DataGraph():
             result = session.run(query, parameters)
             response = [record.data() for record in result]  # Convert records to dictionaries
         except Exception as e:
-            print("Query failed:", e)
+            logging.error("Query failed:", e)
         finally: 
             if session is not None:
                 session.close()
@@ -39,16 +40,16 @@ class DataGraph():
         if confirmation.lower() == 'yes':
             try:
                 self.query("MATCH (n) DETACH DELETE n")
-                print("All data has been dropped from the database.")
+                logging.info("All data has been dropped from the database.")
             except Exception as e:
-                print("Failed to drop all data:", e)
+                logging.error("Failed to drop all data:", e)
         else:
-            print("Operation canceled.")
+            logging.info("Operation canceled.")
 
     def create_datagraph(self, file_path: str):
         """Create the datagraph by executing queries from a file."""
         if not os.path.exists(file_path):
-            print(f"File not found: {file_path}")
+            logging.error(f"File not found: {file_path}")
             return
         
         try:
@@ -60,9 +61,9 @@ class DataGraph():
                 query = query.strip()
                 if query:  # Skip empty queries
                     self.query(query)
-            print("Datagraph created successfully.")
+            logging.info("Datagraph created successfully.")
         except Exception as e:
-            print("Failed to create datagraph:", e)
+            logging.error("Failed to create datagraph:", e)
 
     def get_services(self) -> list:
         """Return all the kubernetes services in the cluster"""
