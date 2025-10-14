@@ -11,6 +11,7 @@ class DataGraph():
             self.driver = GraphDatabase.driver(uri = uri, auth = auth)
         except Exception as e:
             logging.error("Error creating the driver: ", e)
+        self.services = self.get_services()
 
     def close(self):
         """Close the connection to the kubernetes driver"""
@@ -71,36 +72,46 @@ class DataGraph():
         services = [record["s.name"] for record in result] if result else []
         return services
     
-    def get_connected_services(self, service: str) -> list:
-        """Return all the connected services to the service"""
+    def get_services_used_by(self, service: str) -> str | list:
+        """Return all the services that are used by the given service to complete its tasks"""
+        if service not in self.services:
+            return f"The service {service} doesn't exist in the cluster."
         query = "MATCH (s:Service {name: $service_name})-[:CALLS]->(c:Service) RETURN c.name"
         params = {"service_name": service}
         result = self.query(query, params)
-        connected_services = [record["c.name"] for record in result] if result else []
-        return connected_services
+        services_used = [record["c.name"] for record in result] if result else []
+        return services_used
     
-    def get_dependencies(self, service: str) -> list:
+    def get_dependencies(self, service: str) -> str | dict:
+        """Retrieves all dependencies for a specified service from kubernetes cluster."""
+        if service not in self.services:
+            return f"The service {service} doesn't exist in the cluster."
         query = """
         MATCH (s:Service {name: $service_name})-[:USES]->(dependency)
         RETURN dependency.name AS dependencyName, labels(dependency)[0] AS dependencyType
         """
         params = {"service_name": service}
         result = self.query(query, params)
-        dependencies = [{"serviceName" : record["dependencyName"], "serviceType" : record["dependencyType"]} for record in result] if result else []
-        return dependencies
+
+        if len(result) > 0:
+            return {record["dependencyName"]: record["dependencyType"] for record in result}
+        else:
+            return f"The service {service} has no dependencies"
     
     def get_service_summary(self, service: str) -> str:
         """
         Generates a summary of a given service, including the services it calls and its dependencies (for LLM purposes).
         """
-        connected_services = self.get_connected_services(service)
+        if service not in self.services:
+            return f"The service {service} doesn't exist in the cluster."
+        services_used = self.get_services_used_by(service)
         dependencies = self.get_dependencies(service)
 
         summary = f"The service {service} "
-        if len(connected_services) > 0:
-            summary += f"calls {len(connected_services)} services: {', '.join(connected_services)}."
+        if len(services_used) > 0:
+            summary += f"uses {len(services_used)} services to complete its tasks: {', '.join(services_used)}."
         else:
-            summary += f"doesn't call any service."
+            summary += f"doesn't use any other services to complete its tasks."
 
         if len(dependencies) > 0:
             summary += f" It has the following {len(dependencies)} dependencies: " + ", ".join([f"{dep['serviceName']} ({dep['serviceType']})" for dep in dependencies]) + "."
