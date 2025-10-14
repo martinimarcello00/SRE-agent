@@ -1,8 +1,12 @@
 from dotenv import load_dotenv
 from PrometheusAPI import PrometheusAPI
+from logAPI import LogAPI
 from mcp.server.fastmcp import FastMCP
 import sys
 import os
+from pydantic import Field
+from typing_extensions import Annotated
+import logging
 
 #TODO: Remove this and make a single package
 # Add the parent directory to sys.path to import from graphs folder
@@ -13,6 +17,7 @@ load_dotenv("../.env")
 
 prometheus_api = None
 datagraph = None
+log_api = None
 
 def get_prometheus_api():
     """Get or create the PrometheusAPI instance"""
@@ -35,7 +40,16 @@ def get_datagraph():
         datagraph = DataGraph(neo4j_uri, neo4j_user, neo4j_password)
     return datagraph
 
-mcp = FastMCP("Metrics API MCP")
+def get_log_api():
+    """Get or create the LogAPI instance"""
+    import os
+    namespace = os.environ.get("TARGET_NAMESPACE", "default")
+    global log_api
+    if log_api is None:
+        log_api = LogAPI(namespace)
+    return log_api
+
+mcp = FastMCP("Cluster API MCP")
 
 @mcp.tool(
         title="get_pod_metrics",
@@ -89,5 +103,19 @@ def get_dependencies(service: str):
     datagraph = get_datagraph()
     return datagraph.get_dependencies(service)
 
+@mcp.tool(
+        title="get_pod_logs",
+        description="Retrieve logs from a Kubernetes pod with optional filtering for important messages."
+)
+def get_pod_logs(
+    pod_name: Annotated[str, Field(description="The name of the Kubernetes pod to retrieve logs from.")],
+    tail: Annotated[int, Field(description="Number of recent log lines to retrieve.", ge=1)] = 100,
+    important: Annotated[bool, Field(description="If True, filter logs to only include lines with ERROR, WARN, or CRITICAL keywords.")] = True,
+) -> str:
+    """Retrieves the last log entries of a pod"""
+    log_api = get_log_api()
+    return log_api.get_pod_logs(pod_name, tail, important)
+
 if __name__ == "__main__":
+    logging.info(f"Target namespace: {os.environ.get("TARGET_NAMESPACE", "default")}")
     mcp.run(transport="streamable-http")
