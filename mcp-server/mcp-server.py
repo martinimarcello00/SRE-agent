@@ -5,6 +5,7 @@ from mcp.server.fastmcp import FastMCP
 import sys
 import os
 from pydantic import Field
+from typing import Literal
 from typing_extensions import Annotated
 import logging
 
@@ -13,7 +14,7 @@ import logging
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from graphs.datagraph import DataGraph
 
-load_dotenv("../.env")
+load_dotenv()
 
 prometheus_api = None
 datagraph = None
@@ -52,15 +53,35 @@ def get_log_api():
 mcp = FastMCP("Cluster API MCP")
 
 @mcp.tool(
-    title="get_pod_metrics",
-    description="Retrieve all instant Prometheus metrics for a specific Kubernetes pod. Returns comprehensive metrics including CPU, memory, network, and container specifications."
+    title="get_metrics",
+    description="Retrieve all instant Prometheus metrics for a specific Kubernetes pod or service. Returns comprehensive metrics including CPU, memory, network, and container specifications."
 )
-def get_pod_metrics(
-    pod_name: Annotated[str, Field(description="The exact name of the Kubernetes pod to retrieve metrics for.")]
+def get_metrics(
+    resource_name: Annotated[str, Field(description="The exact name of the Kubernetes resource to retrieve metrics for.")],
+    resource_type: Annotated[Literal["pod","service"], Field(description="Type of Kubernetes resource. 'pod' returns metrics for a single pod. 'service' returns aggregated metrics for all pods behind the service.")]
+        
 ) -> dict:
-    """Get all the Prometheus metrics associated with a specific pod"""
+    """Get all the Prometheus metrics associated with a specific cluster resource"""
     api = get_prometheus_api()
-    return api.get_pod_metrics(pod_name)
+    if resource_type == "pod":
+        return api.get_pod_metrics(resource_name)
+    else:
+        pods = api.get_pods_from_service(resource_name)
+        
+        if "error" in pods.keys():
+            return pods
+        
+        # Aggregate metrics from all pods in the service
+        service_metrics = {
+            "service_name": resource_name,
+            "pods": []
+        }
+        
+        for pod in pods["pods"]:
+            pod_metrics = api.get_pod_metrics(pod["pod_name"])
+            service_metrics["pods"].append(pod_metrics)
+        
+        return service_metrics
 
 @mcp.tool(
     title="get_pods_from_service",
@@ -129,22 +150,42 @@ def get_dependencies(
     return {
         "service": service,
         "dependencies": dependencies,
-        "count": len(dependencies),
         "summary": f"Service '{service}' has {len(dependencies)} infrastructure dependencies"
     }
 
 @mcp.tool(
-    title="get_pod_logs",
-    description="Retrieve logs from a Kubernetes pod with optional filtering for important messages."
+    title="get_logs",
+    description="Retrieve logs from a Kubernetes pod or service with optional filtering for important messages."
 )
-def get_pod_logs(
-    pod_name: Annotated[str, Field(description="The name of the Kubernetes pod to retrieve logs from.")],
+def get_logs(
+    resource_name: Annotated[str, Field(description="The exact name of the Kubernetes resource to retrieve logs from.")],
+    resource_type: Annotated[Literal["pod","service"], Field(description="Type of Kubernetes resource. 'pod' returns logs for a single pod. 'service' returns logs for all pods behind the service.")],
     tail: Annotated[int, Field(description="Number of recent log lines to retrieve.", ge=1)] = 100,
     important: Annotated[bool, Field(description="If True, filter logs to only include lines with ERROR, WARN, or CRITICAL keywords.")] = True,
 ) -> str:
-    """Retrieves the last log entries of a pod with optional filtering for important messages"""
+    """Retrieves the last log entries of a pod or service with optional filtering for important messages"""
     log_api = get_log_api()
-    return log_api.get_pod_logs(pod_name, tail, important)
+    
+    if resource_type == "pod":
+        return log_api.get_pod_logs(resource_name, tail, important)
+    else:
+        # Get pods from service first
+        api = get_prometheus_api()
+        pods = api.get_pods_from_service(resource_name)
+        
+        if "error" in pods.keys():
+            return f"Error getting pods for service '{resource_name}': {pods['error']}"
+        
+        # Collect logs from all pods in the service
+        service_logs = f"=== Logs for service '{resource_name}' ===\n\n"
+        
+        for pod in pods["pods"]:
+            pod_logs = log_api.get_pod_logs(pod["pod_name"], tail, important)
+            service_logs += f"--- Pod: {pod['pod_name']} ---\n"
+            service_logs += pod_logs
+            service_logs += "\n\n"
+        
+        return service_logs
 
 if __name__ == "__main__":
     logging.info(f"Target namespace: {os.environ.get("TARGET_NAMESPACE", "default")}")
