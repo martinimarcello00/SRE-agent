@@ -157,3 +157,64 @@ class PrometheusAPI:
                 results["metrics"][metric] = f"Error: {str(e)}"
 
         return results
+    
+    def get_pod_metrics_range(self, pod_name: str, range_minutes: int, step: str = "1m"):
+        """
+            Get all metrics (no Istio) for given pod over a time range - TIME SERIES VALUES.
+            
+            Args:
+                pod_name (str): Pod name
+                range_minutes (int): Time range in minutes from now backwards
+                step (str): Query resolution step (e.g., "15s", "1m", "5m")
+        """
+        from datetime import datetime, timedelta
+        
+        all_metrics = self.normal_metrics + self.network_metrics
+        # Remove duplicates
+        all_metrics = list(set(all_metrics))
+        
+        results = {}
+        
+        results["resource_type"] = "pod"
+        results["resource_namespace"] = self.namespace
+        results["resource_name"] = pod_name
+        results["time_range_minutes"] = range_minutes
+        results["step"] = step
+
+        # Check if the pod exists
+        if pod_name not in self.pods:
+            results["error"] = f"The pod {pod_name} does not exist in the {self.namespace} namespace."
+            return results
+        
+        results["metrics"] = {}
+        
+        # Calculate time range
+        end_time = datetime.now()
+        start_time = end_time - timedelta(minutes=range_minutes)
+
+        for metric in all_metrics:
+            try:
+                # Range query
+                query = f'{metric}{{namespace="{self.namespace}", pod=~".*{pod_name}.*"}}'
+                data = self.prometheusClient.custom_query_range(
+                    query=query,
+                    start_time=start_time,
+                    end_time=end_time,
+                    step=step
+                )
+                
+                if data:
+                    # Extract values from time series data
+                    if len(data) > 0 and 'values' in data[0]:
+                        # Extract just the values (not timestamps) from the time series
+                        values = [float(value[1]) for value in data[0]['values']]
+                        results["metrics"][metric] = values
+                    else:
+                        results["metrics"][metric] = None
+                else:
+                    results["metrics"][metric] = None
+                    
+            except Exception as e:
+                results["metrics"][metric] = f"Error: {str(e)}"
+
+        return results
