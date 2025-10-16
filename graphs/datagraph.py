@@ -92,7 +92,7 @@ class DataGraph():
         params = {"service_name": service}
         result = self.query(query, params)
 
-        if len(result) > 0:
+        if result and len(result) > 0:
             return {record["dependencyName"]: record["dependencyType"] for record in result}
         else:
             return f"The service {service} has no dependencies"
@@ -112,7 +112,7 @@ class DataGraph():
         else:
             summary += f"doesn't use any other services to complete its tasks."
 
-        if len(dependencies) > 0:
-            summary += f" It has the following {len(dependencies)} dependencies: " + ", ".join([f"{dep['serviceName']} ({dep['serviceType']})" for dep in dependencies]) + "."
+        if isinstance(dependencies, dict) and len(dependencies) > 0:
+            summary += f" It has the following {len(dependencies.keys())} dependencies: " + ", ".join([f"{name} ({dep_type})" for name, dep_type in dependencies.items()]) + "."
 
         return summary
