@@ -84,6 +84,38 @@ def get_metrics(
         return service_metrics
 
 @mcp.tool(
+    title="get_metrics_range",
+    description="Retrieve historical Prometheus metrics for a specific Kubernetes pod or service over a time range."
+)  
+def get_metrics_range(
+    resource_name: Annotated[str, Field(description="The exact name of the Kubernetes resource to retrieve metrics for.")],
+    resource_type: Annotated[Literal["pod","service"], Field(description="Type of Kubernetes resource. 'pod' returns metrics for a single pod. 'service' returns aggregated metrics for all pods behind the service.")],
+    time_range_minutes: Annotated[int, Field(description="The time range in minutes to retrieve historical metrics from now. Must be at least 1 minute.", ge=1)]
+) -> dict:
+    """Get historical Prometheus metrics for a resource over a specified time range from now"""
+    api = get_prometheus_api()
+    if resource_type == "pod":
+        return api.get_pod_metrics_range(resource_name, time_range_minutes)
+    else:
+        pods = api.get_pods_from_service(resource_name)
+        
+        if "error" in pods.keys():
+            return pods
+        
+        # Aggregate metrics from all pods in the service
+        service_metrics = {
+            "service_name": resource_name,
+            "time_range_minutes": time_range_minutes,
+            "pods": []
+        }
+        
+        for pod in pods["pods"]:
+            pod_metrics = api.get_pod_metrics_range(pod["pod_name"], time_range_minutes)
+            service_metrics["pods"].append(pod_metrics)
+        
+        return service_metrics
+
+@mcp.tool(
     title="get_pods_from_service",
     description="Retrieve all Kubernetes pods that belong to a specific service. Returns pod names and their current status (Running, Pending, etc.)."
 )
