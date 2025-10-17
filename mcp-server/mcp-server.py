@@ -8,6 +8,7 @@ from pydantic import Field
 from typing import Literal
 from typing_extensions import Annotated
 import logging
+from JaegerAPI import JaegerAPI
 
 #TODO: Remove this and make a single package
 # Add the parent directory to sys.path to import from graphs folder
@@ -19,6 +20,7 @@ load_dotenv()
 prometheus_api = None
 datagraph = None
 log_api = None
+jaeger_api = None
 
 def get_prometheus_api():
     """Get or create the PrometheusAPI instance"""
@@ -49,6 +51,15 @@ def get_log_api():
     if log_api is None:
         log_api = LogAPI(namespace)
     return log_api
+
+def get_jaeger_api():
+    """Get or create the JaegerAPI instance"""
+    import os
+    jaeger_url = os.environ.get("JAEGER_SERVER_URL", "http://localhost:16686")
+    global jaeger_api
+    if jaeger_api is None:
+        jaeger_api = JaegerAPI(jaeger_url)
+    return jaeger_api
 
 mcp = FastMCP("Cluster API MCP")
 
@@ -218,6 +229,34 @@ def get_logs(
             service_logs += "\n\n"
         
         return service_logs
+
+@mcp.tool(
+    title="get_traces",
+    description="Retrieve traces for a specific service, with an option to filter for traces that contain errors. Returns a list of traces, each containing: traceID (unique trace identifier), latency_ms (total trace duration in milliseconds), has_error (boolean indicating if the trace contains errors), and sequence (string showing the service call chain, e.g., 'serviceA -> serviceB -> serviceC')."
+)
+def get_traces(
+        service_name: Annotated[str, Field(description="The name of the service for which to retrieve traces.")],
+        only_errors: Annotated[bool, Field(description="If True, return only traces that contain errors.")] = False
+) -> dict:
+    
+    jaeger = get_jaeger_api()
+    traces = jaeger.get_processed_traces(service_name, only_errors=only_errors)
+
+    return traces
+
+@mcp.tool(
+    title="get_trace",
+    description="Retrieve detailed information for a specific trace by its trace ID. Returns the complete trace with all spans, including service names, operation names, timestamps, durations, tags, and any errors."
+)
+def get_trace(
+    trace_id: Annotated[str, Field(description="The unique trace ID to retrieve detailed information for.")]
+) -> dict:
+    """Get detailed information for a specific trace by trace ID"""
+    jaeger = get_jaeger_api()
+    result = jaeger.get_trace(trace_id)
+    if result is None:
+        return {"error": f"Trace with ID '{trace_id}' not found"}
+    return result
 
 if __name__ == "__main__":
     logging.info(f"Target namespace: {os.environ.get("TARGET_NAMESPACE", "default")}")
