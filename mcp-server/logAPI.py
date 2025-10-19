@@ -69,8 +69,13 @@ class LogAPI:
             # Split logs into lines
             log_lines = logs.split('\n')
 
-            # Only return lines containing 'ERROR', 'WARN', or 'CRITICAL'
-            important_keywords = ["ERROR", "WARN", "CRITICAL"]
+            # Only return lines containing important keywords
+            important_keywords = [
+                "ERROR", "WARN", "CRITICAL", "FATAL", "PANIC",
+                "EXCEPTION", "FAILURE", "FAILED", "TIMEOUT",
+                "REFUSED", "DENIED", "UNREACHABLE", "RESTART",
+                "CRASH", "KILLED", "OOM", "5xx", "500", "503", "502"
+            ]
 
             # Return only the log lines that contains the important keywords
             filtered_logs = [line for line in log_lines if any(keyword in line for keyword in important_keywords)]
@@ -78,15 +83,7 @@ class LogAPI:
             results = ""
 
             if len(filtered_logs) > 0:
-                # Count occurrences of each keyword
-                error_count = sum(1 for line in filtered_logs if "ERROR" in line)
-                warn_count = sum(1 for line in filtered_logs if "WARN" in line)
-                critical_count = sum(1 for line in filtered_logs if "CRITICAL" in line)
-
-                results = f"Found {len(filtered_logs)} important log entries:\n"
-                results += f"ERROR: {error_count} lines\n"
-                results += f"WARN: {warn_count} lines\n"
-                results += f"CRITICAL: {critical_count} lines\n\n"
+                results = f"Found {len(filtered_logs)} important log entries:\n\n"
                 results += "\n".join(filtered_logs)
             else:
                 results += "No important log entries found, full log entries are appended\n"
