@@ -4,6 +4,7 @@ import sys
 import os
 from pathlib import Path
 from langgraph.graph import START, END, StateGraph
+import logging
 
 # Add MCP-server to path for api imports
 mcp_server_path = str(Path(__file__).parent.parent.parent / "MCP-server")
@@ -134,6 +135,9 @@ def planner_agent(state: PlannerAgentState) -> dict:
     
     # Create and invoke chain
     llm_for_tasks = GPT5_MINI.with_structured_output(RCATaskList)
+
+    logging.info("Planner Agent: Finding investigation plan (RCA task list)")
+
     planner_chain = planner_prompt_template | llm_for_tasks
     task_list = planner_chain.invoke({"human_input": human_input})
     

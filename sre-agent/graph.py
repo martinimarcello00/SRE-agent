@@ -1,6 +1,7 @@
 """Main SRE Agent workflow graph assembly."""
 from langgraph.graph import START, END, StateGraph
 from langgraph.types import Send
+import logging
 
 from models import SreParentState
 from agents import (
@@ -46,6 +47,8 @@ def rca_router(state: SreParentState) -> list[Send]:
             "rca_analyses_list": []
         }
         parallel_rca_calls.append(Send("rca_agent", rca_input_state))
+
+    logging.info(f"Starting {len(parallel_rca_calls)} parallel RCA agent workers")
 
     return parallel_rca_calls
 

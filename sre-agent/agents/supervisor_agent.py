@@ -5,6 +5,7 @@ from langgraph.graph import START, END, StateGraph
 from models import SupervisorAgentState, FinalReport
 from prompts import supervisor_prompt_template
 from config import GPT5_MINI
+import logging
 
 
 def supervisor_agent(state: SupervisorAgentState) -> dict:
@@ -20,6 +21,8 @@ def supervisor_agent(state: SupervisorAgentState) -> dict:
     rca_analyses = state.get("rca_analyses_list", [])
     app_summary = state.get("app_summary", "")
     app_name = state.get("app_name", "")
+
+    logging.info("Supervisor Agent is synthesizing findings to produce the final RCA diagnosis.")
     
     if not rca_analyses and not symptoms:
         return {
