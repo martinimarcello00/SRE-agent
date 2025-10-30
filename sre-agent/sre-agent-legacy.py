@@ -1,3 +1,5 @@
+# NOTE: This is an old implementation of the SRE agent and has not been refactored into packages. Consider using updated modules for new development.
+
 from dotenv import load_dotenv
 import os
 import sys
