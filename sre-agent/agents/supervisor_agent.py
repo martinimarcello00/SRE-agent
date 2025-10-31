@@ -58,9 +58,11 @@ def supervisor_agent(state: SupervisorAgentState) -> dict:
     if rca_analyses:
         human_parts.append("# RCA Investigation Findings\n\n")
         for i, analysis in enumerate(rca_analyses, 1):
+            # Create a copy excluding message_history for the prompt
+            analysis_for_prompt = {k: v for k, v in analysis.items() if k != 'message_history'}
             human_parts.extend([
                 f"## Investigation {i}\n\n",
-                f"```json\n{json.dumps(analysis, indent=2)}\n```\n\n"
+                f"```json\n{json.dumps(analysis_for_prompt, indent=2)}\n```\n\n"
             ])
         human_parts.append("---\n\n")
     

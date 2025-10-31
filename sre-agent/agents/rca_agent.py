@@ -129,6 +129,19 @@ async def format_response(state: RcaAgentState) -> dict:
     final_report["insights"] = state["insights"]
     final_report["steps_performed"] = state["prev_steps"]
     final_report["tools_stats"] = count_tool_calls(state["messages"])
+    
+    # Export complete message history as JSON
+    message_history = []
+    for msg in state["messages"]:
+        message_dict = {
+            "type": msg.__class__.__name__,
+            "content": msg.content if hasattr(msg, 'content') else str(msg),
+        }
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            message_dict["tool_calls"] = msg.tool_calls
+        message_history.append(message_dict)
+    
+    final_report["message_history"] = message_history
 
     return {"rca_analyses_list": [final_report]}
 
