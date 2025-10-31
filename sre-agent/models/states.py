@@ -12,7 +12,6 @@ class TriageAgentState(TypedDict):
     target_namespace: str
     trace_service_starting_point: str
     problematic_pods: dict
-    problematic_traces: dict
     slow_traces: dict
     problematic_metrics: dict
     symptoms: List[Symptom]
@@ -57,7 +56,6 @@ class SreParentState(TypedDict):
 
     # Triage Agent
     problematic_pods: dict
-    problematic_traces: dict
     slow_traces: dict
     problematic_metrics: dict
     symptoms: List[Symptom]

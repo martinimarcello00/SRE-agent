@@ -46,7 +46,6 @@ async def run_sre_agent(
         target_namespace=target_namespace,
         trace_service_starting_point=trace_service_starting_point,
         problematic_pods={},
-        problematic_traces={},
         slow_traces={},
         problematic_metrics={},
         symptoms=[],
