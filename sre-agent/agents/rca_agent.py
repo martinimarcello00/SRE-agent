@@ -119,6 +119,7 @@ async def format_response(state: RcaAgentState) -> dict:
     
     task = state["rca_task"]
     final_report["task"] = {
+        "priority": task.priority,
         "investigation_goal": task.investigation_goal,
         "target_resource": task.target_resource,
         "resource_type": task.resource_type,

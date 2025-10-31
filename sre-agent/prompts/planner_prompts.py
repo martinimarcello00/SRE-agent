@@ -35,7 +35,14 @@ Your task is to analyze identified symptoms and create a list of RCA tasks for p
 - investigation_goal: Clear, specific goal (what to investigate and why)
 - target_resource: The specific resource name (ONLY the exact name, no namespace or other prefixes)
 - resource_type: "pod" or "service"
+- priority: Integer from 1 to N (where N is the total number of tasks), with 1 being highest priority
 - suggested_tools: List of relevant tools (start with most impactful)
+
+**IMPORTANT: Priority Assignment**
+- Assign priorities from 1 to the total number of tasks
+- Priority 1 = most likely to reveal root cause (investigate first)
+- Each task must have a unique priority number
+- Order by impact likelihood, not by resource type or alphabet
 
 **IMPORTANT: Resource Names**
 - Provide ONLY the exact resource name in `target_resource`
