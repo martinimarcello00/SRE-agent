@@ -140,8 +140,11 @@ def planner_agent(state: PlannerAgentState) -> dict:
 
     planner_chain = planner_prompt_template | llm_for_tasks
     task_list = planner_chain.invoke({"human_input": human_input})
+
+    # order the task_list.rca_tasks by priority number (ascending)
+    tasks_list = sorted(task_list.rca_tasks, key=lambda t: t.priority)  # type: ignore
     
-    return {"rca_tasks": task_list.rca_tasks}  # type: ignore
+    return {"rca_tasks": tasks_list}
 
 
 def build_planner_graph():
