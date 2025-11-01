@@ -17,7 +17,6 @@ from datetime import datetime
 # Import the compiled parent graph
 from graph import parent_graph
 
-
 async def run_sre_agent(
     app_name: str,
     app_summary: str,
@@ -48,6 +47,7 @@ async def run_sre_agent(
         problematic_pods={},
         slow_traces={},
         problematic_metrics={},
+        tasks_to_be_executed=[],
         symptoms=[],
         rca_tasks=[],
         rca_analyses_list=[],

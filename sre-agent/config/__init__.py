@@ -5,7 +5,8 @@ from .settings import (
     MCP_CONFIG,
     TOOLS_ALLOWED,
     K8S_TOOLS_ALLOWED,
-    CUSTOM_TOOLS_ALLOWED
+    CUSTOM_TOOLS_ALLOWED,
+    RCA_TASKS_PER_ITERATION
 )
 
 __all__ = [
@@ -14,5 +15,6 @@ __all__ = [
     'MCP_CONFIG',
     'TOOLS_ALLOWED',
     'K8S_TOOLS_ALLOWED',
-    'CUSTOM_TOOLS_ALLOWED'
+    'CUSTOM_TOOLS_ALLOWED',
+    'RCA_TASKS_PER_ITERATION'
 ]

@@ -20,6 +20,9 @@ GPT5_MINI = ChatOpenAI(model="gpt-5-mini")
 # Investigation Budget
 MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", 8))
 
+# RCA tasks per iteration
+RCA_TASKS_PER_ITERATION = int(os.environ.get("RCA_TASKS_PER_ITERATION", 3))
+
 # MCP Server Configuration
 MCP_CONFIG = {
     "kubernetes": {

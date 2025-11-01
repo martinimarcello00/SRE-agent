@@ -66,5 +66,8 @@ class SreParentState(TypedDict):
     # RCA Worker agent
     rca_analyses_list: Annotated[list[dict], operator.add]
 
+    # Tasks to be executed by the RCA agent
+    tasks_to_be_executed: List[int]
+
     # Supervisor agent
     final_report: dict
