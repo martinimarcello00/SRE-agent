@@ -122,12 +122,17 @@ def planner_agent(state: PlannerAgentState) -> dict:
         # Add dependencies if they exist
         if "data_dependencies" in deps and deps["data_dependencies"]:
             human_parts.append(f"**Data Dependencies**:\n```json\n{json.dumps(deps['data_dependencies'], indent=2)}\n```\n\n")
+        else:
+            human_parts.append(f"**Data Dependencies**:\nNo data dependencies found for the affected resource\n\n")
         
         if "infra_dependencies" in deps and deps["infra_dependencies"]:
             human_parts.append(f"**Infrastructure Dependencies**:\n```json\n{json.dumps(deps['infra_dependencies'], indent=2)}\n```\n\n")
-        
+        else:
+            human_parts.append(f"**Infrastructure Dependencies**:\nNo infrastructure dependencies found for the affected resource\n\n")
+
         if "data_dependencies" not in deps and "infra_dependencies" not in deps:
             human_parts.append("**Dependencies**: None found\n\n")
+
         
         human_parts.append("---\n\n")
     
