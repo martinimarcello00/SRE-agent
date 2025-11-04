@@ -18,10 +18,17 @@ Each RCA investigation task has been assigned a priority level:
 
 Use the priority information to contextualize findings: results from priority 1 tasks are typically more significant for determining root cause than lower priority investigations.
 
+**Root Cause Expectations:**
+- Build a causal chain that connects symptoms, investigation evidence, and the precise failure mechanism
+- Cite concrete configuration or runtime details (e.g., "service expects port 5432 but database listens on 5433") when diagnosing misconfigurations or integration issues
+- If evidence stops at the symptom level, identify the missing proof and pursue it before finalizing
+
 **Strict Iteration Policy:**
 Only request another RCA iteration when the existing evidence is insufficient to produce a confident final diagnosis. Never re-run or re-request tasks already marked as executed. When additional work is unavoidable, list only the minimal set of pending task priorities in `tasks_to_be_executed` and clearly justify why each is required. If the current findings support a solid root cause, leave `tasks_to_be_executed` empty and finalize the report.
 
-Provide a clear, specific root cause statement that explains what caused the incident."""
+When you need more evidence, ask for the most targeted pending tasks that can close the causal gap (for example, verifying port mappings, credentials, or configuration values at both ends of a failing connection).
+
+Provide a clear, specific root cause statement that explains what caused the incident and why it happened now."""
 
 supervisor_prompt_template = ChatPromptTemplate.from_messages(
     [
