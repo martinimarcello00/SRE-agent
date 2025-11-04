@@ -64,10 +64,18 @@ async def run_sre_agent(
     )
     
     start_time = time.time()
-    
-    config = {"recursion_limit": 100}
+
+    config = {
+        "recursion_limit": 100,
+        "metadata": {
+            "app_name": app_name,
+            "namespace": target_namespace,
+            "starting_service": trace_service_starting_point,
+            "experiment_name": trace_name or app_name,
+        }
+    }
     if trace_name:
-        config["run_name"] = trace_name #type: ignore
+        config["run_name"] = trace_name  # type: ignore
 
     result = await parent_graph.ainvoke(initial_state, config) #type: ignore
     
