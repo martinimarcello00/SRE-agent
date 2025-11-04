@@ -37,27 +37,36 @@ def update_rca_task_status(state: SreParentState) -> dict:
         return {}
     
     selected_tasks = []
+    priorities_to_execute = set(rca_tasks_to_be_executed)
 
-    if len(rca_tasks_to_be_executed) > 0:
+    if len(priorities_to_execute) > 0:
         # Subsequent iterations: Tasks chosen by the supervisor agent based on priority
+        logging.info(f"Updating status for tasks: {priorities_to_execute}")
         for task in rca_tasks:
-            if task.priority in rca_tasks_to_be_executed:
+            if task.priority in priorities_to_execute:
                 selected_tasks.append(task)
     else:
         # First iteration: Select first RCA_TASKS_PER_ITERATION tasks for parallel execution
-        selected_tasks = rca_tasks[:RCA_TASKS_PER_ITERATION]
+        logging.info(f"Updating status for first {RCA_TASKS_PER_ITERATION} tasks.")
+        
+        # Select only tasks that are currently "pending"
+        pending_tasks = [task for task in rca_tasks if task.status == "pending"]
+        selected_tasks = pending_tasks[:RCA_TASKS_PER_ITERATION]
     
     # Mark selected tasks as "executed", keep unselected tasks as "pending"
     updated_tasks = []
+    selected_priorities = {task.priority for task in selected_tasks}
+    
     for task in rca_tasks:
-        if task in selected_tasks:
+        if task.priority in selected_priorities:
             # Update status to executed using model_copy
             updated_task = task.model_copy(update={"status": "executed"})
             updated_tasks.append(updated_task)
         else:
             updated_tasks.append(task)
     
-    return {"rca_tasks": updated_tasks}
+    # Clear the tasks_to_be_executed list as they are now being processed
+    return {"rca_tasks": updated_tasks, "tasks_to_be_executed": []}
 
 def rca_router(state: SreParentState) -> list[Send]:
     """Route RCA tasks to parallel RCA agents or skip to supervisor based on task availability.
@@ -81,28 +90,54 @@ def rca_router(state: SreParentState) -> list[Send]:
         List of Send commands for parallel RCA agent execution, or single Send to supervisor if no tasks
     """
     rca_tasks = state.get("rca_tasks", [])
-    rca_tasks_to_be_executed = state.get("tasks_to_be_executed", [])
-
+    
     if not rca_tasks:
         # No RCA tasks, go directly to supervisor with current symptoms
+        logging.info("RCA Router: No RCA tasks found. Routing to supervisor.")
         supervisor_input = {
             "app_name": state.get("app_name"),
             "app_summary": state.get("app_summary"),
             "symptoms": state.get("symptoms", []),
+            "rca_tasks": [],
             "rca_analyses_list": []
         }
         return [Send("supervisor_agent", supervisor_input)]
 
-    selected_tasks = []
+    # Select tasks marked as "executed" by the schedule_rca_tasks node
+    # These are the tasks intended for the CURRENT iteration
+    selected_tasks = [task for task in rca_tasks if task.status == "executed"]
+    
+    # Check if all tasks have already been executed in previous iterations
+    pending_tasks = [task for task in rca_tasks if task.status == "pending"]
+    
+    if not selected_tasks and not pending_tasks:
+        # All tasks are done, but router was called. Go to supervisor.
+        logging.info("RCA Router: All tasks previously executed. Routing to supervisor for final report.")
+        supervisor_input = {
+            "app_name": state.get("app_name"),
+            "app_summary": state.get("app_summary"),
+            "symptoms": state.get("symptoms", []),
+            "rca_tasks": rca_tasks, # <-- Pass all tasks
+            "rca_analyses_list": state.get("rca_analyses_list", []) # Pass existing analyses
+        }
+        return [Send("supervisor_agent", supervisor_input)]
+    
+    if not selected_tasks:
+        # This can happen if tasks_to_be_executed was empty and all tasks were already pending
+        # This is the entry point for the very first iteration
+        logging.info("RCA Router: No 'executed' tasks found. Selecting pending tasks for first iteration.")
+        selected_tasks = pending_tasks[:RCA_TASKS_PER_ITERATION]
+        if not selected_tasks:
+            logging.warning("RCA Router: No tasks to execute. Routing to supervisor.")
+            supervisor_input = {
+                "app_name": state.get("app_name"),
+                "app_summary": state.get("app_summary"),
+                "symptoms": state.get("symptoms", []),
+                "rca_tasks": rca_tasks,
+                "rca_analyses_list": state.get("rca_analyses_list", [])
+            }
+            return [Send("supervisor_agent", supervisor_input)]
 
-    if len(rca_tasks_to_be_executed) > 0:
-        # Subsequent iterations: Tasks chosen by the supervisor agent based on priority
-        for task in rca_tasks:
-            if task.priority in rca_tasks_to_be_executed:
-                selected_tasks.append(task)
-    else:
-        # First iteration: Select first RCA_TASKS_PER_ITERATION tasks for parallel execution
-        selected_tasks = rca_tasks[:RCA_TASKS_PER_ITERATION]
 
     # Create parallel RCA investigations for selected tasks
     parallel_rca_calls = []
@@ -110,8 +145,8 @@ def rca_router(state: SreParentState) -> list[Send]:
         # Pass renamed fields to avoid InvalidUpdateError with parent state
         rca_input_state = {
             "rca_task": task,
-            "rca_app_summary": state.get("app_summary", ""),  # Renamed field
-            "rca_target_namespace": state.get("target_namespace", ""),  # Renamed field
+            "rca_app_summary": state.get("app_summary", ""), 
+            "rca_target_namespace": state.get("target_namespace", ""),
             "messages": [],
             "insights": [],
             "prev_steps": [],
@@ -119,9 +154,30 @@ def rca_router(state: SreParentState) -> list[Send]:
         }
         parallel_rca_calls.append(Send("rca_agent", rca_input_state))
 
-    logging.info(f"Starting {len(parallel_rca_calls)} parallel RCA agent workers")
+    logging.info(f"RCA Router: Starting {len(parallel_rca_calls)} parallel RCA agent workers for tasks: {[t.priority for t in selected_tasks]}")
 
     return parallel_rca_calls
+
+
+def supervisor_router(state: SreParentState) -> str:
+    """Determine next step after supervisor agent.
+    
+    Args:
+        state: Current parent state
+        
+    Returns:
+        Name of next node to execute
+    """
+    tasks_to_be_executed = state.get("tasks_to_be_executed", [])
+    
+    if len(tasks_to_be_executed) > 0:
+        # Supervisor requested more tasks
+        logging.info(f"Supervisor Router: Re-routing to 'schedule_rca_tasks' for tasks: {tasks_to_be_executed}")
+        return "schedule_rca_tasks"
+    else:
+        # No more tasks, investigation is complete
+        logging.info("Supervisor Router: Investigation complete. Ending graph.")
+        return END
 
 
 def build_parent_graph():
@@ -135,19 +191,19 @@ def build_parent_graph():
     # Add agent nodes
     builder.add_node("triage_agent", triage_agent_graph)
     builder.add_node("planner_agent", planner_agent_graph)
-    builder.add_node("update_task_status", update_rca_task_status)
+    builder.add_node("schedule_rca_tasks", update_rca_task_status)
     builder.add_node("rca_agent", rca_agent_graph)
     builder.add_node("supervisor_agent", supervisor_agent_graph)
 
     # Build workflow
     builder.add_edge(START, "triage_agent")
     builder.add_edge("triage_agent", "planner_agent")
-    builder.add_edge("planner_agent", "update_task_status")
+    builder.add_edge("planner_agent", "schedule_rca_tasks")
 
     # Use rca_router to dynamically send tasks to parallel RCA agents
     # or skip to supervisor if no tasks
     builder.add_conditional_edges(
-        "update_task_status",
+        "schedule_rca_tasks",
         rca_router,
         ["rca_agent", "supervisor_agent"]
     )
@@ -155,10 +211,17 @@ def build_parent_graph():
     # After RCA agents complete, go to supervisor
     # (rca_analyses_list is automatically aggregated via operator.add)
     builder.add_edge("rca_agent", "supervisor_agent")
-    builder.add_edge("supervisor_agent", END)
+    
+    # Add conditional edge after supervisor to loop or end
+    builder.add_conditional_edges(
+        "supervisor_agent",
+        supervisor_router,
+        {
+            "schedule_rca_tasks": "schedule_rca_tasks",
+            END: END
+        }
+    )
 
     return builder.compile()
 
-
-# Export the compiled parent graph
 parent_graph = build_parent_graph()

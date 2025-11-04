@@ -45,6 +45,8 @@ class SupervisorAgentState(TypedDict):
     symptoms: List[Symptom]
     rca_analyses_list: List[dict]
     final_report: dict
+    rca_tasks: List[RCATask]
+    tasks_to_be_executed: List[int]
 
 
 class SreParentState(TypedDict):

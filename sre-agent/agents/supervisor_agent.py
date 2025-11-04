@@ -2,7 +2,7 @@
 import json
 from langgraph.graph import START, END, StateGraph
 
-from models import SupervisorAgentState, FinalReport
+from models import SupervisorAgentState, SupervisorDecision, FinalReport
 from prompts import supervisor_prompt_template
 from config import GPT5_MINI
 import logging
@@ -21,6 +21,7 @@ def supervisor_agent(state: SupervisorAgentState) -> dict:
     rca_analyses = state.get("rca_analyses_list", [])
     app_summary = state.get("app_summary", "")
     app_name = state.get("app_name", "")
+    rca_tasks = state.get("rca_tasks", [])
 
     logging.info("Supervisor Agent is synthesizing findings to produce the final RCA diagnosis.")
     
@@ -66,16 +67,53 @@ def supervisor_agent(state: SupervisorAgentState) -> dict:
             ])
         human_parts.append("---\n\n")
     
+    # Add pending RCA tasks
+    if rca_tasks:
+        human_parts.append("# Pending RCA Tasks\nThese are the tasks planned but NOT yet executed:\n\n")
+        pending_tasks = [task for task in rca_tasks if task.status == "pending"]
+        if not pending_tasks:
+            human_parts.append("All planned RCA tasks have been executed.\n")
+        else:
+            for task in pending_tasks:
+                human_parts.extend([
+                    f"- **Priority #{task.priority}**: {task.investigation_goal}",
+                    f"  - **Target**: {task.resource_type} `{task.target_resource}`",
+                    f"  - **Suggested Tools**: {', '.join(task.suggested_tools)}\n"
+                ])
+    
     human_input = "".join(human_parts)
     human_input += "\n\nBased on all the above information, provide a comprehensive root cause diagnosis."
-    
-    # Create and invoke chain
-    llm_for_final_report = GPT5_MINI.with_structured_output(FinalReport)
-    supervisor_chain = supervisor_prompt_template | llm_for_final_report
-    final_report = supervisor_chain.invoke({"human_input": human_input})
-    
-    return {"final_report": final_report.model_dump()}  # type: ignore
 
+    # Create and invoke chain
+    llm_with_decision = GPT5_MINI.with_structured_output(SupervisorDecision)
+    supervisor_chain = supervisor_prompt_template | llm_with_decision
+    decision = supervisor_chain.invoke({"human_input": human_input})
+
+    # Evaluate the decision
+    if decision.final_report: # type: ignore
+        logging.info("Supervisor Decision: Investigation COMPLETE. Generating final report.")
+        # Return final report and clear tasks list
+        return {
+            "final_report": decision.final_report.model_dump(), # type: ignore
+            "tasks_to_be_executed": []
+        }
+    elif decision.tasks_to_be_executed: # type: ignore
+        logging.info(f"Supervisor Decision: Investigation INCOMPLETE. Requesting tasks: {decision.tasks_to_be_executed}") # type: ignore
+        # Return tasks to be executed and clear final report
+        return {
+            "final_report": {}, # Ensure final_report is empty
+            "tasks_to_be_executed": decision.tasks_to_be_executed # type: ignore
+        }
+    else:
+        # Fallback: If LLM returns neither, assume investigation is done
+        logging.warning("Supervisor Warning: LLM returned no decision. Defaulting to incomplete report.")
+        final_report = FinalReport(
+            root_cause="Investigation Inconclusive",
+            affected_resources=[],
+            evidence_summary="Supervisor agent failed to make a clear decision.",
+            investigation_summary="Incomplete"
+        )
+        return {"final_report": final_report.model_dump(), "tasks_to_be_executed": []}
 
 def build_supervisor_graph():
     """Build and compile the supervisor agent graph.

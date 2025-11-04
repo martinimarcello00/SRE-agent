@@ -1,6 +1,6 @@
 """Pydantic model schemas for SRE Agent."""
 from pydantic import BaseModel, Field
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 
 class Symptom(BaseModel):
@@ -43,3 +43,14 @@ class FinalReport(BaseModel):
     affected_resources: List[str] = Field(..., description="List of all resources affected by the incident")
     evidence_summary: str = Field(..., description="Summary of evidence from all RCA workers")
     investigation_summary: str = Field(..., description="Overview of the investigation process and findings")
+
+class SupervisorDecision(BaseModel):
+    """The supervisor's decision to either conclude the investigation or request more data."""
+    tasks_to_be_executed: List[int] = Field(
+        default_factory=list,
+        description="A list of task priorities to execute next. Provide this ONLY if the investigation is INCOMPLETE and more data is strictly necessary."
+    )
+    final_report: Optional[FinalReport] = Field(
+        default=None,
+        description="The final root cause report. Provide this ONLY if the investigation is COMPLETE and the evidence is sufficient."
+    )

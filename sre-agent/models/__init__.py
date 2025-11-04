@@ -5,7 +5,8 @@ from .schemas import (
     RCATask,
     RCATaskList,
     UpdateAgentData,
-    FinalReport
+    FinalReport,
+    SupervisorDecision
 )
 
 from .states import (
@@ -29,5 +30,6 @@ __all__ = [
     'PlannerAgentState',
     'RcaAgentState',
     'SupervisorAgentState',
-    'SreParentState'
+    'SreParentState',
+    'SupervisorDecision'
 ]
