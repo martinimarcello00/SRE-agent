@@ -13,6 +13,15 @@ from typing import Optional
 from langsmith import Client
 import os
 from datetime import datetime
+import logging
+
+# Configure logging for the SRE Agent script
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("mcp.client.streamable_http").setLevel(logging.WARNING)
 
 # Import the compiled parent graph
 from graph import parent_graph
