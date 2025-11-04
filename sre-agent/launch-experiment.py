@@ -14,6 +14,8 @@ from langsmith import Client
 import os
 from datetime import datetime
 import logging
+from dotenv import load_dotenv
+from pathlib import Path
 
 # Configure logging for the SRE Agent script
 logging.basicConfig(
@@ -210,16 +212,30 @@ async def main():
         print(f"\n  Evidence Summary:\n  {final_report.get('evidence_summary', 'N/A')}")
     
     # Save results
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    safe_experiment_name = experiment_name.replace(" ", "_")
-    output_file = f"result-{date_str}-{safe_experiment_name}.json"
+    date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    safe_experiment_name = experiment_name.replace(" ", "-")
+    output_file = f"{date_str}_{safe_experiment_name}.json"
 
     enriched_result = export_json_results(result, experiment_name)
 
-    with open(output_file, "w") as f:
+    load_dotenv(dotenv_path="../.env")
+
+    # Add divide and conquer parameter
+    enriched_result["rca_tasks_per_iteration"] = os.environ.get("RCA_TASKS_PER_ITERATION", "")
+    # Add tool calls budgeting parameter
+    enriched_result["max_tool_calls"] = os.environ.get("MAX_TOOL_CALLS", "")
+    
+    output_dir = os.environ.get("RESULTS_PATH", "results")
+    output_dir_path = Path(output_dir)
+    if not output_dir_path.is_absolute():
+        output_dir_path = Path.cwd() / output_dir_path
+    output_dir_path.mkdir(parents=True, exist_ok=True)
+    output_file_path = output_dir_path / output_file
+
+    with open(output_file_path, "w") as f:
         json.dump(enriched_result, f, indent=2, default=str)
     
-    print(f"\n💾 Results saved to: {output_file}")
+    print(f"\n💾 Results saved to: {output_file_path}")
     
     return result
 
