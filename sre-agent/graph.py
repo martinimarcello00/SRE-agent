@@ -189,11 +189,46 @@ def build_parent_graph():
     builder = StateGraph(SreParentState)
 
     # Add agent nodes
-    builder.add_node("triage_agent", triage_agent_graph)
-    builder.add_node("planner_agent", planner_agent_graph)
-    builder.add_node("schedule_rca_tasks", update_rca_task_status)
-    builder.add_node("rca_agent", rca_agent_graph)
-    builder.add_node("supervisor_agent", supervisor_agent_graph)
+    builder.add_node(
+        "triage_agent",
+        triage_agent_graph,
+        metadata={
+            "name": "Triage Agent",
+            "description": "Aggregates telemetry and extracts symptoms to seed the investigation."
+        },
+    )
+    builder.add_node(
+        "planner_agent",
+        planner_agent_graph,
+        metadata={
+            "name": "Planner Agent",
+            "description": "Scores symptoms and proposes RCA tasks for the current incident."
+        },
+    )
+    builder.add_node(
+        "schedule_rca_tasks",
+        update_rca_task_status,
+        metadata={
+            "name": "Schedule RCA Tasks",
+            "description": "Updates task execution status and selects work for the next RCA iteration."
+        },
+    )
+    builder.add_node(
+        "rca_agent",
+        rca_agent_graph,
+        metadata={
+            "name": "RCA Agent",
+            "description": "Runs focused RCA workflows in parallel for each scheduled task."
+        },
+    )
+    builder.add_node(
+        "supervisor_agent",
+        supervisor_agent_graph,
+        metadata={
+            "name": "Supervisor Agent",
+            "description": "Reviews RCA findings, requests follow-up tasks, or finalizes the report."
+        },
+    )
 
     # Build workflow
     builder.add_edge(START, "triage_agent")
