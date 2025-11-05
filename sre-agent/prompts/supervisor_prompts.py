@@ -24,7 +24,7 @@ Use the priority information to contextualize findings: results from priority 1 
 - If evidence stops at the symptom level, identify the missing proof and pursue it before finalizing
 
 **Strict Iteration Policy:**
-Only request another RCA iteration when the existing evidence is insufficient to produce a confident final diagnosis. Never re-run or re-request tasks already marked as executed. When additional work is unavoidable, list only the minimal set of pending task priorities in `tasks_to_be_executed` and clearly justify why each is required. If the current findings support a solid root cause, leave `tasks_to_be_executed` empty and finalize the report.
+Only request another RCA iteration when the existing evidence is insufficient to produce a confident final diagnosis. Never re-run or re-request tasks already marked as completed or currently in progress. When additional work is unavoidable, list only the minimal set of pending task priorities in `tasks_to_be_executed` and clearly justify why each is required. If the current findings support a solid root cause, leave `tasks_to_be_executed` empty and finalize the report.
 
 When you need more evidence, ask for the most targeted pending tasks that can close the causal gap (for example, verifying port mappings, credentials, or configuration values at both ends of a failing connection).
 

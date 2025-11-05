@@ -13,14 +13,14 @@ from agents import (
 )
 
 def update_rca_task_status(state: SreParentState) -> dict:
-    """Update the status of RCA tasks from 'pending' to 'executed' before sending to RCA agents.
+    """Update the status of RCA tasks from 'pending' to 'in_progress' before sending to RCA agents.
     
     This function implements a divide-and-conquer strategy for RCA task execution:
-    - First iteration: Marks the first RCA_TASKS_PER_ITERATION tasks as 'executed'
-    - Subsequent iterations: Marks only the tasks selected by the supervisor agent (via tasks_to_be_executed) as 'executed'
+    - First iteration: Marks the first RCA_TASKS_PER_ITERATION tasks as 'in_progress'
+    - Subsequent iterations: Marks only the tasks selected by the supervisor agent (via tasks_to_be_executed) as 'in_progress'
     
     The same number of tasks is always maintained in rca_tasks, only their status is updated.
-    Tasks not yet executed remain with status 'pending'.
+    Tasks not yet scheduled remain with status 'pending'.
     
     Args:
         state: Current parent state containing:
@@ -28,45 +28,67 @@ def update_rca_task_status(state: SreParentState) -> dict:
             - tasks_to_be_executed: List of task priorities to execute (empty on first iteration)
         
     Returns:
-        Dictionary with updated rca_tasks list where selected tasks have status='executed'
+    Dictionary with updated rca_tasks list where selected tasks have status='in_progress'
     """
     rca_tasks = state.get("rca_tasks", [])
     rca_tasks_to_be_executed = state.get("tasks_to_be_executed", [])
-    
+
     if not rca_tasks:
         return {}
-    
-    selected_tasks = []
-    priorities_to_execute = set(rca_tasks_to_be_executed)
 
-    if len(priorities_to_execute) > 0:
-        # Subsequent iterations: Tasks chosen by the supervisor agent based on priority
+    # Determine which priorities already have completed analyses so they are never rescheduled
+    completed_priorities: set[int] = set()
+    for analysis in state.get("rca_analyses_list", []):
+        task_info = analysis.get("task") if isinstance(analysis, dict) else None
+        priority = None
+        if isinstance(task_info, dict):
+            priority = task_info.get("priority")
+        elif hasattr(task_info, "priority"):
+            priority = getattr(task_info, "priority")
+        if isinstance(priority, int):
+            completed_priorities.add(priority)
+
+    # Normalise task statuses so previously scheduled work is marked as completed
+    normalised_tasks = []
+    for task in rca_tasks:
+        if task.priority in completed_priorities and task.status != "completed":
+            normalised_tasks.append(task.model_copy(update={"status": "completed"}))
+        else:
+            normalised_tasks.append(task)
+
+    rca_tasks = normalised_tasks
+
+    selected_tasks: list = []
+    priorities_to_execute = {priority for priority in rca_tasks_to_be_executed if isinstance(priority, int)}
+
+    if priorities_to_execute:
+        # Subsequent iterations: execute exactly the tasks requested by the supervisor
         logging.info(f"Updating status for tasks: {priorities_to_execute}")
-        for task in rca_tasks:
-            if task.priority in priorities_to_execute:
-                selected_tasks.append(task)
+        selected_tasks = [task for task in rca_tasks if task.priority in priorities_to_execute and task.status != "completed"]
+        missing_priorities = priorities_to_execute.difference({task.priority for task in selected_tasks})
+        if missing_priorities:
+            logging.warning(f"Requested RCA tasks already completed or missing: {sorted(missing_priorities)}")
     else:
-        # First iteration: Select first RCA_TASKS_PER_ITERATION tasks for parallel execution
+        # First iteration: select first pending tasks for parallel execution
         logging.info(f"Updating status for first {RCA_TASKS_PER_ITERATION} tasks.")
-        
-        # Select only tasks that are currently "pending"
         pending_tasks = [task for task in rca_tasks if task.status == "pending"]
         selected_tasks = pending_tasks[:RCA_TASKS_PER_ITERATION]
-    
-    # Mark selected tasks as "executed", keep unselected tasks as "pending"
+
+    # Mark selected tasks as "in_progress" and persist other status transitions
     updated_tasks = []
     selected_priorities = {task.priority for task in selected_tasks}
-    
+
     for task in rca_tasks:
-        if task.priority in selected_priorities:
-            # Update status to executed using model_copy
-            updated_task = task.model_copy(update={"status": "executed"})
-            updated_tasks.append(updated_task)
+        if task.priority in selected_priorities and task.status != "in_progress":
+            updated_tasks.append(task.model_copy(update={"status": "in_progress"}))
+        elif task.priority in completed_priorities and task.status != "completed":
+            updated_tasks.append(task.model_copy(update={"status": "completed"}))
+        elif task.priority not in selected_priorities and task.status == "in_progress":
+            updated_tasks.append(task.model_copy(update={"status": "pending"}))
         else:
             updated_tasks.append(task)
-    
-    # Clear the tasks_to_be_executed list as they are now being processed
-    return {"rca_tasks": updated_tasks, "tasks_to_be_executed": []}
+
+    return {"rca_tasks": updated_tasks}
 
 def rca_router(state: SreParentState) -> list[Send]:
     """Route RCA tasks to parallel RCA agents or skip to supervisor based on task availability.
@@ -81,7 +103,7 @@ def rca_router(state: SreParentState) -> list[Send]:
     
     Args:
         state: Current parent state containing:
-            - rca_tasks: List of all RCATask objects (already marked as 'executed' or 'pending')
+            - rca_tasks: List of all RCATask objects (marked as 'pending', 'in_progress', or 'completed')
             - tasks_to_be_executed: List of task priorities selected by supervisor (empty on first iteration)
             - app_name, app_summary: Application metadata
             - symptoms: List of identified symptoms
@@ -90,6 +112,7 @@ def rca_router(state: SreParentState) -> list[Send]:
         List of Send commands for parallel RCA agent execution, or single Send to supervisor if no tasks
     """
     rca_tasks = state.get("rca_tasks", [])
+    tasks_to_be_executed = [priority for priority in state.get("tasks_to_be_executed", []) if isinstance(priority, int)]
     
     if not rca_tasks:
         # No RCA tasks, go directly to supervisor with current symptoms
@@ -103,16 +126,24 @@ def rca_router(state: SreParentState) -> list[Send]:
         }
         return [Send("supervisor_agent", supervisor_input)]
 
-    # Select tasks marked as "executed" by the schedule_rca_tasks node
-    # These are the tasks intended for the CURRENT iteration
-    selected_tasks = [task for task in rca_tasks if task.status == "executed"]
-    
-    # Check if all tasks have already been executed in previous iterations
+    # Determine tasks to run this iteration
+    if tasks_to_be_executed:
+        # Subsequent iterations: respect supervisor instructions explicitly
+        requested_priorities = set(tasks_to_be_executed)
+        selected_tasks = [task for task in rca_tasks if task.priority in requested_priorities and task.status != "completed"]
+        missing_priorities = requested_priorities.difference({task.priority for task in selected_tasks})
+        if missing_priorities:
+            logging.warning(f"RCA Router: Requested tasks already completed or unavailable: {sorted(missing_priorities)}")
+    else:
+        # First iteration fallback: execute tasks marked as "in_progress"
+        selected_tasks = [task for task in rca_tasks if task.status == "in_progress"]
+
+    # Check if all tasks have already been completed in previous iterations
     pending_tasks = [task for task in rca_tasks if task.status == "pending"]
     
     if not selected_tasks and not pending_tasks:
         # All tasks are done, but router was called. Go to supervisor.
-        logging.info("RCA Router: All tasks previously executed. Routing to supervisor for final report.")
+        logging.info("RCA Router: All tasks previously completed. Routing to supervisor for final report.")
         supervisor_input = {
             "app_name": state.get("app_name"),
             "app_summary": state.get("app_summary"),
@@ -125,7 +156,7 @@ def rca_router(state: SreParentState) -> list[Send]:
     if not selected_tasks:
         # This can happen if tasks_to_be_executed was empty and all tasks were already pending
         # This is the entry point for the very first iteration
-        logging.info("RCA Router: No 'executed' tasks found. Selecting pending tasks for first iteration.")
+        logging.info("RCA Router: No 'in_progress' tasks found. Selecting pending tasks for first iteration.")
         selected_tasks = pending_tasks[:RCA_TASKS_PER_ITERATION]
         if not selected_tasks:
             logging.warning("RCA Router: No tasks to execute. Routing to supervisor.")

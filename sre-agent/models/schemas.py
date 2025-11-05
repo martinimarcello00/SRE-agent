@@ -19,7 +19,7 @@ class SymptomList(BaseModel):
 class RCATask(BaseModel):
     """A RCA task to be performed by the RCA agent"""
     priority: int = Field(..., description="Order of execution for this RCA task")
-    status: Literal["pending", "executed"] = Field(default="pending", description="Status of the RCA task")
+    status: Literal["pending", "in_progress", "completed"] = Field(default="pending", description="Status of the RCA task")
     investigation_goal: str = Field(..., description="Goal of the investigation")
     target_resource: str = Field(..., description="Name of the resource to investigate")
     resource_type: Literal["pod", "service"] = Field(..., description="Type of resource being investigated")

@@ -69,10 +69,10 @@ def supervisor_agent(state: SupervisorAgentState) -> dict:
     
     # Add pending RCA tasks
     if rca_tasks:
-        human_parts.append("# Pending RCA Tasks\nThese are the tasks planned but NOT yet executed:\n\n")
-        pending_tasks = [task for task in rca_tasks if task.status == "pending"]
+        human_parts.append("# Pending RCA Tasks\nThese are the tasks planned but NOT yet completed:\n\n")
+        pending_tasks = [task for task in rca_tasks if task.status in ("pending", "in_progress")]
         if not pending_tasks:
-            human_parts.append("All planned RCA tasks have been executed.\n")
+            human_parts.append("All planned RCA tasks have been completed.\n")
         else:
             for task in pending_tasks:
                 human_parts.extend([
