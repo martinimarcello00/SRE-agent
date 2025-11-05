@@ -30,6 +30,7 @@ from graph import parent_graph
 
 async def run_sre_agent(
     app_name: str,
+    fault_name: str,
     app_summary: str,
     target_namespace: str,
     trace_service_starting_point: str,
@@ -57,6 +58,7 @@ async def run_sre_agent(
         trace_service_starting_point=trace_service_starting_point,
         problematic_pods={},
         slow_traces={},
+        problematic_traces={},
         problematic_metrics={},
         tasks_to_be_executed=[],
         symptoms=[],
@@ -74,6 +76,7 @@ async def run_sre_agent(
             "namespace": target_namespace,
             "starting_service": trace_service_starting_point,
             "experiment_name": trace_name or app_name,
+            "fault_name" : fault_name
         }
     }
     if trace_name:
@@ -85,7 +88,7 @@ async def run_sre_agent(
     
     return result, execution_time
 
-def get_experiment_metrics(experiment_name: str) -> dict:
+def get_experiment_metrics(experiment_name: str,) -> dict:
     """
     Get comprehensive metrics for a LangSmith experiment.
     
@@ -147,7 +150,14 @@ def get_experiment_metrics(experiment_name: str) -> dict:
         "agent_stats": agent_stats
     }
 
-def export_json_results(result: dict, experiment_name: str) -> dict:
+def export_json_results(
+        result: dict,
+        experiment_name: str,
+        fault_name: str,
+        application_name: str,
+        target_namespace: str,
+        trace_service_starting_point: str
+        ) -> dict:
 
     export = result
 
@@ -166,15 +176,35 @@ def export_json_results(result: dict, experiment_name: str) -> dict:
     export["rca_tasks"] = rca_tasks
 
     export["stats"] = get_experiment_metrics(experiment_name)
+
+    testbed = {}
+    testbed["application_name"] = application_name,
+    testbed["fault_name"] = fault_name
+    testbed["target_namespace"] = target_namespace
+    testbed["trace_service_starting_point"] = trace_service_starting_point
+    # Add divide and conquer parameter
+    testbed["rca_tasks_per_iteration"] = os.environ.get("RCA_TASKS_PER_ITERATION", "")
+    # Add tool calls budgeting parameter
+    testbed["max_tool_calls"] = os.environ.get("MAX_TOOL_CALLS", "")
+
+    export["testbed"] = testbed
     
     return export
 
 async def main():
+
+    load_dotenv(dotenv_path="../.env")
+
     """Main execution function."""
     # Get experiment name
     experiment_name = input("Enter experiment name (press Enter for default): ").strip()
     if not experiment_name:
         experiment_name = "SRE Agent Test"
+
+    # Prompt for fault name (AIOpsLab experiment name)
+    fault_name = ""
+    while not fault_name:
+        fault_name = input("Enter fault name (AIOpsLab experiment name): ").strip()
     
     # Application configuration
     app_summary = """
@@ -185,15 +215,17 @@ async def main():
     """
     target_namespace = "test-hotel-reservation"
     service_starting_point = "frontend"
+    app_name = "Hotel Reservation"
     
     print(f"\n🚀 Starting SRE Agent: {experiment_name}")
-    print(f"📦 Application: Hotel Reservation")
+    print(f"📦 Application: {app_name}")
     print(f"🎯 Namespace: {target_namespace}")
     print(f"🔍 Starting service: {service_starting_point}\n")
     
     # Run the agent
     result, exec_time = await run_sre_agent(
-        app_name="Hotel Reservation",
+        app_name=app_name,
+        fault_name=fault_name,
         app_summary=app_summary,
         target_namespace=target_namespace,
         trace_service_starting_point=service_starting_point,
@@ -216,15 +248,15 @@ async def main():
     safe_experiment_name = experiment_name.replace(" ", "-")
     output_file = f"{date_str}_{safe_experiment_name}.json"
 
-    enriched_result = export_json_results(result, experiment_name)
+    enriched_result = export_json_results(
+        result=result,
+        experiment_name=experiment_name,
+        fault_name=fault_name,
+        application_name=app_name,
+        target_namespace=target_namespace,
+        trace_service_starting_point=service_starting_point
+    )
 
-    load_dotenv(dotenv_path="../.env")
-
-    # Add divide and conquer parameter
-    enriched_result["rca_tasks_per_iteration"] = os.environ.get("RCA_TASKS_PER_ITERATION", "")
-    # Add tool calls budgeting parameter
-    enriched_result["max_tool_calls"] = os.environ.get("MAX_TOOL_CALLS", "")
-    
     output_dir = os.environ.get("RESULTS_PATH", "results")
     output_dir_path = Path(output_dir)
     if not output_dir_path.is_absolute():
@@ -238,7 +270,6 @@ async def main():
     print(f"\n💾 Results saved to: {output_file_path}")
     
     return result
-
 
 if __name__ == "__main__":
     asyncio.run(main())
