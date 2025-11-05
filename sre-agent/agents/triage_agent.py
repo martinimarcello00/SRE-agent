@@ -36,6 +36,12 @@ def get_triage_data(state: TriageAgentState) -> dict:
     # Get pods with problematic statuses
     problematic_pods = k8s_api.get_problematic_pods()
 
+    # Traces which have errors
+    problematic_traces = jaeger_api.get_processed_traces(
+        service=state["trace_service_starting_point"], 
+        only_errors=True
+    )
+
     # Filter for traces which take more than 2 seconds
     slow_traces = jaeger_api.get_slow_traces(
         service=state["trace_service_starting_point"], 
@@ -61,6 +67,7 @@ def get_triage_data(state: TriageAgentState) -> dict:
 
     return {
         "problematic_pods": problematic_pods,
+        "problematic_traces": problematic_traces,
         "slow_traces": slow_traces,
         "problematic_metrics": problematic_pods_metrics
     }
@@ -91,7 +98,11 @@ def triage_agent(state: TriageAgentState) -> dict:
     if "info" not in state["slow_traces"] and "error" not in state["slow_traces"]:
         slow_traces_str = json.dumps(state["slow_traces"], indent=2)
         human_prompt_parts.append(f"### Slow Traces\n```json\n{slow_traces_str}\n```")
-    
+
+    if "info" not in state["problematic_traces"] and "error" not in state["problematic_traces"] and len(human_prompt_parts) == 1:
+        problematic_traces_str = json.dumps(state["problematic_traces"], indent=2)
+        human_prompt_parts.append(f"### Traces that contains error\n```json\n{problematic_traces_str}\n```")
+
     # If no problems were found in any dataset, add a note.
     if len(human_prompt_parts) == 1:
         human_prompt_parts.append("No issues were found in pods, metrics, or traces.")

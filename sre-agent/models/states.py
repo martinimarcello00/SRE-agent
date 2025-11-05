@@ -14,6 +14,7 @@ class TriageAgentState(TypedDict):
     problematic_pods: dict
     slow_traces: dict
     problematic_metrics: dict
+    problematic_traces: dict
     symptoms: List[Symptom]
 
 
@@ -60,6 +61,7 @@ class SreParentState(TypedDict):
     problematic_pods: dict
     slow_traces: dict
     problematic_metrics: dict
+    problematic_traces: dict
     symptoms: List[Symptom]
 
     # Planner agent

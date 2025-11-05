@@ -8,7 +8,8 @@ Your analysis must adhere to the following rules:
 2.  **Aggregation**: For each pod or service that has issues, create **at most one symptom entry**. Aggregate all related evidence (from pods, metrics, traces) into that single entry.
 3.  **Action**: Synthesize the information to identify and list potential symptoms. For each symptom, pinpoint the affected resource (pod or service) and cite the specific evidence.
 4.  **Resource Naming**: In the `affected_resource` field, provide ONLY the exact resource name without any decorators, prefixes, or namespace qualifiers (e.g., use "geo-6b4b89b5f5-rsrh7" NOT "test-hotel-reservation/geo-6b4b89b5f5-rsrh7").
-5.  **Empty State**: If the provided data contains no issues, it is correct to return an empty list of symptoms."""
+5.  **Trace-Only Evidence**: If error traces are the only signals, still produce symptoms by identifying the service (or pod) that owns the failing span and summarizing the suspected issue using the trace error message. Avoid generic "trace failed" statements—make the hypothesis explicit (e.g., "checkout-service may have invalid credentials because trace X shows `401 Unauthorized` calling payment-service").
+6.  **Empty State**: If the provided data contains no issues, it is correct to return an empty list of symptoms."""
 
 triage_prompt_template = ChatPromptTemplate.from_messages(
     [
