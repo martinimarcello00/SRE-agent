@@ -33,8 +33,8 @@ class RcaAgentState(TypedDict):
     rca_app_summary: str
     rca_target_namespace: str
     rca_task: RCATask
-    insights: Annotated[list[str], operator.add]
-    prev_steps: Annotated[list[str], operator.add]
+    insights: list[str]
+    prev_steps: list[str]
     rca_output: dict
     rca_analyses_list: list[dict]
 

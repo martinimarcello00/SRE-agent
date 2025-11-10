@@ -4,7 +4,7 @@ from .schemas import (
     SymptomList,
     RCATask,
     RCATaskList,
-    UpdateAgentData,
+    RCAAgentExplaination,
     FinalReport,
     SupervisorDecision
 )
@@ -23,7 +23,7 @@ __all__ = [
     'SymptomList',
     'RCATask',
     'RCATaskList',
-    'UpdateAgentData',
+    'RCAAgentExplaination',
     'FinalReport',
     # States
     'TriageAgentState',

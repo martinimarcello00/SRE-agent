@@ -14,10 +14,6 @@ INVESTIGATION BUDGET: Maximum {investigation_budget} tool calls. Use only what i
 
 {budget_status}
 
-Investigation Context:
-*Previous Steps:* {prev_steps}
-*Insights:* {insights}
-
 Instructions:
 1. Use ONLY the Priority Tools above, which are specifically pre-selected for this investigation. Do not propose or use tools outside this list.
 2. For each tool call, first formulate a clear, testable hypothesis about a possible root cause that can be answered by the result. Avoid broad or exploratory queries.
@@ -34,38 +30,33 @@ Instructions:
    - diagnosis: State the precise root cause as it pertains to the investigation goal
    - reasoning: Support your diagnosis by referencing unique findings from your tool calls
 
-Special constraints:
-- You will not see the raw results of your tool calls; instead, your summary will be extracted for highlights and steps. Therefore, make each step and summary explicit, clear, and concise.
-
 REMEMBER: Quality over quantity. Focus on unique and conclusive findings rather than exhaustive or repetitive investigation.
 """
+EXPLAIN_ANALYSIS_PROMPT = """
+You are an autonomous SRE agent performing Root Cause Analysis (RCA) on a Kubernetes incident.
 
-SUMMARISE_PROMPT = """
-    You are an autonomous SRE agent performing Root Cause Analysis on a Kubernetes incident.
+## Context
+You are provided with the **entire conversation history** between the RCA agent and its tools.  
+This includes all tool calls, tool responses, and intermediate reasoning steps — potentially with parallel or sequential executions.
 
-    Context:
+Your task is to **reconstruct a concise but complete summary** of the RCA investigation.
 
-    Previous Insights: 
-    {insights}
-    
-    Previous Steps:
-    {prev_steps}
+## Instructions
 
-    Below are the latest messages (tool calls and/or tool responses - may include parallel executions):
-    {last_messages}
+1. **Reconstruct all investigation steps**
+   - Extract each *distinct action or analysis* the agent performed, in chronological order.  
+   - Use a concise and consistent format:
+     - `"Checked [resource/metric] using [tool_name]"`
+     - `"Analyzed [component/relationship]"`
+     - `"Correlated data from [toolA] and [toolB]"`
+   - Focus only on meaningful investigative actions — ignore metadata or reasoning unrelated to tool execution.
 
-    Instructions:
-    1. **Extract the key insight**: Identify the most important NEW finding from all the latest messages that helps diagnose the root cause. Focus on:
-       - Anomalies or unusual patterns
-       - Resource states that could cause issues
-       - Dependencies or relationships discovered
-       - Error messages or failure indicators
-       - Patterns across multiple tool responses (in case of parallel calls)
-       If the tool calls failed or returned no useful data, note this as the insight.
-    
-    2. **Describe the actions taken**: Write a concise description of what tools were called and what resources were examined.
-       Format: "Checked [resource/metric] using [tool_name]" (list all tools if multiple parallel calls)
-       Example for parallel: "Checked pod logs and dependencies using get_logs and get_dependencies"
-
-    Keep both responses under 150 characters each. Be specific and actionable.
+2. **Aggregate key insights**
+   - List all *important findings or discoveries* made during the investigation.  
+   - Include:
+     - Anomalies or abnormal metrics  
+     - Resource failures, misconfigurations, or alerts  
+     - Dependency relationships or causal clues  
+     - Summaries of confirmed or disproven hypotheses  
+   - Avoid repetition: merge overlapping insights into one clear statement.
 """
