@@ -88,7 +88,7 @@ async def run_sre_agent(
     
     return result, execution_time
 
-def get_experiment_metrics(experiment_name: str,) -> dict:
+def get_experiment_metrics(experiment_name: str, exec_time: float | int) -> dict:
     """
     Get comprehensive metrics for a LangSmith experiment.
     
@@ -113,7 +113,7 @@ def get_experiment_metrics(experiment_name: str,) -> dict:
         return {"error": f"Experiment '{experiment_name}' not found"}
     
     # Calculate execution time
-    execution_time = (run.end_time - run.start_time).total_seconds() if run.end_time else 0
+    execution_time = (run.end_time - run.start_time).total_seconds() if run.end_time else exec_time
     
     # Get all child runs
     child_runs = list(langsmith_client.list_runs(parent_run_id=run.id))
@@ -153,6 +153,7 @@ def get_experiment_metrics(experiment_name: str,) -> dict:
 def export_json_results(
         result: dict,
         experiment_name: str,
+        exec_time: float | int,
         fault_name: str,
         application_name: str,
         target_namespace: str,
@@ -175,7 +176,7 @@ def export_json_results(
         rca_tasks.append(t.model_dump())
     export["rca_tasks"] = rca_tasks
 
-    export["stats"] = get_experiment_metrics(experiment_name)
+    export["stats"] = get_experiment_metrics(experiment_name, exec_time)
 
     testbed = {}
     testbed["application_name"] = application_name,
@@ -251,6 +252,7 @@ async def main():
     enriched_result = export_json_results(
         result=result,
         experiment_name=experiment_name,
+        exec_time = exec_time,
         fault_name=fault_name,
         application_name=app_name,
         target_namespace=target_namespace,

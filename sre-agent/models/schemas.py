@@ -31,10 +31,10 @@ class RCATaskList(BaseModel):
     rca_tasks: List[RCATask] = Field(default_factory=list, description="List of RCA tasks to be performed")
 
 
-class UpdateAgentData(BaseModel):
-    """Represents a step performed by the SRE agent."""
-    insight: str = Field(..., description="Most important new finding")
-    prev_step: str = Field(..., description="Concise description of the most recent action taken")
+class RCAAgentExplaination(BaseModel):
+    """Aggregates all reasoning steps and insights extracted by the RCA agent at the end of the investigation."""
+    steps: List[str] = Field(..., description="Chronological list of all actions or analyses performed by the agent during the investigation")
+    insights: List[str] = Field(..., description="Comprehensive list of key findings or insights discovered throughout the investigation")
 
 
 class FinalReport(BaseModel):
