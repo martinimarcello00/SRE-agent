@@ -12,6 +12,8 @@ from agents import (
     supervisor_agent_graph
 )
 
+logger = logging.getLogger(__name__)
+
 def update_rca_task_status(state: SreParentState) -> dict:
     """Update the status of RCA tasks from 'pending' to 'in_progress' before sending to RCA agents.
     
@@ -63,14 +65,14 @@ def update_rca_task_status(state: SreParentState) -> dict:
 
     if priorities_to_execute:
         # Subsequent iterations: execute exactly the tasks requested by the supervisor
-        logging.info(f"Updating status for tasks: {priorities_to_execute}")
+        logger.info(f"Updating status for tasks: {priorities_to_execute}")
         selected_tasks = [task for task in rca_tasks if task.priority in priorities_to_execute and task.status != "completed"]
         missing_priorities = priorities_to_execute.difference({task.priority for task in selected_tasks})
         if missing_priorities:
-            logging.warning(f"Requested RCA tasks already completed or missing: {sorted(missing_priorities)}")
+            logger.warning(f"Requested RCA tasks already completed or missing: {sorted(missing_priorities)}")
     else:
         # First iteration: select first pending tasks for parallel execution
-        logging.info(f"Updating status for first {RCA_TASKS_PER_ITERATION} tasks.")
+        logger.info(f"Updating status for first {RCA_TASKS_PER_ITERATION} tasks.")
         pending_tasks = [task for task in rca_tasks if task.status == "pending"]
         selected_tasks = pending_tasks[:RCA_TASKS_PER_ITERATION]
 
@@ -116,7 +118,7 @@ def rca_router(state: SreParentState) -> list[Send]:
     
     if not rca_tasks:
         # No RCA tasks, go directly to supervisor with current symptoms
-        logging.info("RCA Router: No RCA tasks found. Routing to supervisor.")
+        logger.info("RCA Router: No RCA tasks found. Routing to supervisor.")
         supervisor_input = {
             "app_name": state.get("app_name"),
             "app_summary": state.get("app_summary"),
@@ -133,7 +135,7 @@ def rca_router(state: SreParentState) -> list[Send]:
         selected_tasks = [task for task in rca_tasks if task.priority in requested_priorities and task.status != "completed"]
         missing_priorities = requested_priorities.difference({task.priority for task in selected_tasks})
         if missing_priorities:
-            logging.warning(f"RCA Router: Requested tasks already completed or unavailable: {sorted(missing_priorities)}")
+            logger.warning(f"RCA Router: Requested tasks already completed or unavailable: {sorted(missing_priorities)}")
     else:
         # First iteration fallback: execute tasks marked as "in_progress"
         selected_tasks = [task for task in rca_tasks if task.status == "in_progress"]
@@ -143,7 +145,7 @@ def rca_router(state: SreParentState) -> list[Send]:
     
     if not selected_tasks and not pending_tasks:
         # All tasks are done, but router was called. Go to supervisor.
-        logging.info("RCA Router: All tasks previously completed. Routing to supervisor for final report.")
+        logger.info("RCA Router: All tasks previously completed. Routing to supervisor for final report.")
         supervisor_input = {
             "app_name": state.get("app_name"),
             "app_summary": state.get("app_summary"),
@@ -156,10 +158,10 @@ def rca_router(state: SreParentState) -> list[Send]:
     if not selected_tasks:
         # This can happen if tasks_to_be_executed was empty and all tasks were already pending
         # This is the entry point for the very first iteration
-        logging.info("RCA Router: No 'in_progress' tasks found. Selecting pending tasks for first iteration.")
+        logger.info("RCA Router: No 'in_progress' tasks found. Selecting pending tasks for first iteration.")
         selected_tasks = pending_tasks[:RCA_TASKS_PER_ITERATION]
         if not selected_tasks:
-            logging.warning("RCA Router: No tasks to execute. Routing to supervisor.")
+            logger.warning("RCA Router: No tasks to execute. Routing to supervisor.")
             supervisor_input = {
                 "app_name": state.get("app_name"),
                 "app_summary": state.get("app_summary"),
@@ -185,7 +187,7 @@ def rca_router(state: SreParentState) -> list[Send]:
         }
         parallel_rca_calls.append(Send("rca_agent", rca_input_state))
 
-    logging.info(f"RCA Router: Starting {len(parallel_rca_calls)} parallel RCA agent workers for tasks: {[t.priority for t in selected_tasks]}")
+    logger.info(f"RCA Router: Starting {len(parallel_rca_calls)} parallel RCA agent workers for tasks: {[t.priority for t in selected_tasks]}")
 
     return parallel_rca_calls
 
@@ -203,11 +205,11 @@ def supervisor_router(state: SreParentState) -> str:
     
     if len(tasks_to_be_executed) > 0:
         # Supervisor requested more tasks
-        logging.info(f"Supervisor Router: Re-routing to 'schedule_rca_tasks' for tasks: {tasks_to_be_executed}")
+        logger.info(f"Supervisor Router: Re-routing to 'schedule_rca_tasks' for tasks: {tasks_to_be_executed}")
         return "schedule_rca_tasks"
     else:
         # No more tasks, investigation is complete
-        logging.info("Supervisor Router: Investigation complete. Ending graph.")
+        logger.info("Supervisor Router: Investigation complete. Ending graph.")
         return END
 
 

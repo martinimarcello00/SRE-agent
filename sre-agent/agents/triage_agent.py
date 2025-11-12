@@ -6,6 +6,8 @@ from pathlib import Path
 from langgraph.graph import START, END, StateGraph
 import logging
 
+logger = logging.getLogger(__name__)
+
 # Add MCP-server to path for api imports
 mcp_server_path = str(Path(__file__).parent.parent.parent / "MCP-server")
 if mcp_server_path not in sys.path:
@@ -112,7 +114,7 @@ def triage_agent(state: TriageAgentState) -> dict:
     llm_for_symptoms = GPT5_MINI.with_structured_output(SymptomList)
     triage_chain = triage_prompt_template | llm_for_symptoms
 
-    logging.info("Triage agent is analyzing triage data to identify symptoms.")
+    logger.info("Triage agent is analyzing triage data to identify symptoms.")
 
     symptom_list = triage_chain.invoke({"human_input": human_input})
 

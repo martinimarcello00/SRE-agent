@@ -25,7 +25,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("mcp.client.streamable_http").setLevel(logging.WARNING)
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("automated_experiment")
 
 def get_experiment_dir_path(dir_name: str, experiment_path: Optional[str] = None):
 

@@ -7,6 +7,7 @@ from prompts import supervisor_prompt_template
 from config import GPT5_MINI
 import logging
 
+logger = logging.getLogger(__name__)
 
 def supervisor_agent(state: SupervisorAgentState) -> dict:
     """Analyze all RCA findings and produce final root cause diagnosis.
@@ -23,7 +24,7 @@ def supervisor_agent(state: SupervisorAgentState) -> dict:
     app_name = state.get("app_name", "")
     rca_tasks = state.get("rca_tasks", [])
 
-    logging.info("Supervisor Agent is synthesizing findings to produce the final RCA diagnosis.")
+    logger.info("Supervisor Agent is synthesizing findings to produce the final RCA diagnosis.")
     
     if not rca_analyses and not symptoms:
         return {
@@ -91,14 +92,14 @@ def supervisor_agent(state: SupervisorAgentState) -> dict:
 
     # Evaluate the decision
     if decision.final_report: # type: ignore
-        logging.info("Supervisor Decision: Investigation COMPLETE. Generating final report.")
+        logger.info("Supervisor Decision: Investigation COMPLETE. Generating final report.")
         # Return final report and clear tasks list
         return {
             "final_report": decision.final_report.model_dump(), # type: ignore
             "tasks_to_be_executed": []
         }
     elif decision.tasks_to_be_executed: # type: ignore
-        logging.info(f"Supervisor Decision: Investigation INCOMPLETE. Requesting tasks: {decision.tasks_to_be_executed}") # type: ignore
+        logger.info(f"Supervisor Decision: Investigation INCOMPLETE. Requesting tasks: {decision.tasks_to_be_executed}") # type: ignore
         # Return tasks to be executed and clear final report
         return {
             "final_report": {}, # Ensure final_report is empty
@@ -106,7 +107,7 @@ def supervisor_agent(state: SupervisorAgentState) -> dict:
         }
     else:
         # Fallback: If LLM returns neither, assume investigation is done
-        logging.warning("Supervisor Warning: LLM returned no decision. Defaulting to incomplete report.")
+        logger.warning("Supervisor Warning: LLM returned no decision. Defaulting to incomplete report.")
         final_report = FinalReport(
             root_cause="Investigation Inconclusive",
             affected_resources=[],
