@@ -34,7 +34,8 @@ async def run_sre_agent(
     app_summary: str,
     target_namespace: str,
     trace_service_starting_point: str,
-    trace_name: Optional[str] = None
+    trace_name: Optional[str] = None,
+    agent_configuration_name: Optional[str] = None
 ) -> tuple[dict, float]:
     """Execute the complete SRE agent workflow.
     
@@ -66,6 +67,9 @@ async def run_sre_agent(
         rca_analyses_list=[],
         final_report={}
     )
+
+    if not agent_configuration_name:
+        agent_configuration_name = "Default"
     
     start_time = time.time()
 
@@ -76,7 +80,8 @@ async def run_sre_agent(
             "namespace": target_namespace,
             "starting_service": trace_service_starting_point,
             "experiment_name": trace_name or app_name,
-            "fault_name" : fault_name
+            "fault_name" : fault_name,
+            "agent_configuration": agent_configuration_name
         }
     }
     if trace_name:
@@ -157,12 +162,16 @@ def export_json_results(
         fault_name: str,
         application_name: str,
         target_namespace: str,
-        trace_service_starting_point: str
+        trace_service_starting_point: str,
+        agent_configuration_name: Optional[str] = None
         ) -> dict:
 
     export = result
 
     export["experiment_name"] = experiment_name
+    
+    if agent_configuration_name:
+        export["agent_configuration_name"] = agent_configuration_name
 
     # Convert symptom pydantic objects to dict
     symptoms = []
@@ -196,7 +205,6 @@ async def main():
 
     load_dotenv(dotenv_path="../.env")
 
-    """Main execution function."""
     # Get experiment name
     experiment_name = input("Enter experiment name (press Enter for default): ").strip()
     if not experiment_name:
@@ -230,7 +238,8 @@ async def main():
         app_summary=app_summary,
         target_namespace=target_namespace,
         trace_service_starting_point=service_starting_point,
-        trace_name=experiment_name
+        trace_name=experiment_name,
+        agent_configuration_name="Plain ReAct"
     )
 
     # Display results
