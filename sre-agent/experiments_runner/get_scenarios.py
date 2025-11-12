@@ -1,6 +1,9 @@
-import os
 import json
 from pathlib import Path
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def load_fault_scenarios(scenarios_dir=None):
@@ -20,11 +23,11 @@ def load_fault_scenarios(scenarios_dir=None):
     else:
         scenarios_dir = Path(scenarios_dir)
     
-    print(f"Loading fault scenarios from: {scenarios_dir.absolute()}")
+    logger.info("Loading fault scenarios from: %s", scenarios_dir.absolute())
     
     # Verify the directory exists
     if not scenarios_dir.exists():
-        print(f"✗ Error: Directory not found: {scenarios_dir}")
+        logger.error("Directory not found: %s", scenarios_dir)
         return []
     
     scenarios = []
@@ -39,11 +42,11 @@ def load_fault_scenarios(scenarios_dir=None):
                 # Add the filename as metadata
                 scenario['_source_file'] = json_file.name
                 scenarios.append(scenario)
-                print(f"✓ Loaded: {json_file.name}")
+                logger.info("Loaded scenario: %s", json_file.name)
         except json.JSONDecodeError as e:
-            print(f"✗ Error loading {json_file.name}: {e}")
+            logger.error("Error loading %s: %s", json_file.name, e)
         except Exception as e:
-            print(f"✗ Unexpected error with {json_file.name}: {e}")
+            logger.exception("Unexpected error with %s: %s", json_file.name, e)
     
-    print(f"\nTotal scenarios loaded: {len(scenarios)}")
+    logger.info("Total scenarios loaded: %s", len(scenarios))
     return scenarios

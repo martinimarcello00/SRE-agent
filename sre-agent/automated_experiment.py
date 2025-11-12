@@ -25,6 +25,27 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("mcp.client.streamable_http").setLevel(logging.WARNING)
 
+logger = logging.getLogger(__name__)
+
+def get_experiment_dir_path(dir_name: str, experiment_path: Optional[str] = None):
+
+    load_dotenv(dotenv_path="../.env")
+
+    if experiment_path:
+        output_dir = experiment_path
+    else:
+        output_dir = os.environ.get("RESULTS_PATH", "results")
+    output_dir_path = Path(output_dir)
+
+    if not output_dir_path.is_absolute():
+        output_dir_path = Path.cwd() / output_dir_path
+    output_dir_path.mkdir(parents=True, exist_ok=True)
+
+    # Create the experiment subdirectory
+    experiment_dir_path = output_dir_path / dir_name
+    experiment_dir_path.mkdir(parents=True, exist_ok=True)
+
+    return experiment_dir_path
 
 async def run_experiment(
     app_name: str,
@@ -36,15 +57,18 @@ async def run_experiment(
     agent_configuration_name: str,
     run_sre_agent_func,
     export_json_results_func,
+    results_group_dir: Optional[Path] = None,
     trace_name: Optional[str] = None,
 ):
-    # Functions are passed as parameters to avoid importing before MCP server starts
     
-    logging.info(f"Waiting {wait_time_before_running_agent} before running the SRE agent")
+    logger.info(
+        "Waiting %s seconds before running the SRE agent",
+        wait_time_before_running_agent,
+    )
     time.sleep(wait_time_before_running_agent)
 
     experiment_name = f"{agent_configuration_name} - {app_name} - {fault_name}"
-    logging.info(f"Launching experiment: {experiment_name}")
+    logger.info("Launching experiment: %s", experiment_name)
 
     result, exec_time = await run_sre_agent_func(
         app_name=app_name,
@@ -72,56 +96,76 @@ async def run_experiment(
         agent_configuration_name=agent_configuration_name
     )
 
-    output_dir = os.environ.get("RESULTS_PATH", "results")
-    output_dir_path = Path(output_dir)
-    if not output_dir_path.is_absolute():
-        output_dir_path = Path.cwd() / output_dir_path
+    if results_group_dir is not None:
+        output_dir_path = results_group_dir
+    else:
+        output_dir = os.environ.get("RESULTS_PATH", "results")
+        output_dir_path = Path(output_dir)
+        if not output_dir_path.is_absolute():
+            output_dir_path = Path.cwd() / output_dir_path
     output_dir_path.mkdir(parents=True, exist_ok=True)
     output_file_path = output_dir_path / output_file
 
     with open(output_file_path, "w") as f:
         json.dump(enriched_result, f, indent=2, default=str)
 
-    print(f"\n💾 Results saved to: {output_file_path}")
-    print("\n✅ Experiment completed")
+    logger.info("Results saved to %s", output_file_path)
+    logger.info("Experiment completed successfully")
 
 def main():
-
-    load_dotenv(dotenv_path="../.env")
 
     AIOPSLAB_DIR = "/home/vm-kubernetes/AIOpsLab"
 
     fault_scenarios = load_fault_scenarios()
 
-    for i in fault_scenarios:
+    if not fault_scenarios:
+        logger.error("No fault scenarios found. Exiting.")
+        return
 
-        print("="*60)
-        print(f"Scenario: {i['scenario']}\nFault: {i['fault_type']}")
-        print("="*60)
+    print("\n\nThe following experiments will be executed:")
+    for idx, scenario in enumerate(fault_scenarios, start=1):
+        scenario_name = scenario.get("scenario", "Unknown Scenario")
+        fault_type = scenario.get("fault_type", "Unknown Fault")
+        print(f"{idx}. {scenario_name} — {fault_type}")
+
+    proceed_input = input("\nProceed with these experiments? [y/N]: ").strip().lower()
+    if proceed_input not in {"y", "yes"}:
+        logger.info("Aborting execution at user request.")
+        return
+
+    default_batch_name = datetime.now().strftime("batch-%Y%m%d-%H%M%S")
+    batch_dir_input = input(
+        f"Enter directory name for this experiment batch [{default_batch_name}]: "
+    ).strip()
+    batch_dir_name = batch_dir_input or default_batch_name
+
+    results_group_path = get_experiment_dir_path(batch_dir_name, None)
+    logger.info("Results will be stored under: %s", results_group_path)
+
+    for i in fault_scenarios:
+        logger.info("Scenario: %s", i["scenario"])
+        logger.info("Fault: %s", i["fault_type"])
 
         try:
             # Step 1: Setup cluster and AIOpsLab
-            print("="*60)
-            print(f"STEP 1: Setup kind and aiopslab")
-            print("="*60)
+            logger.info("=== STEP 1: Setup kind and aiopslab ===")
             
             success = setup_cluster_and_aiopslab(
                 problem_id=i["aiopslab_command"],
-                aiopslab_dir=AIOPSLAB_DIR
+                aiopslab_dir=AIOPSLAB_DIR,
+                stream_cli_output=False,
             )
             
             if not success:
-                print("\n❌ Setup failed")
+                logger.error("Setup failed; aborting run")
                 sys.exit(1)
 
             # Start MCP server (silence output when ready)
-            print("\n" + "="*60)
-            print("Starting MCP Server")
-            print("="*60)
+            logger.info("=== Starting MCP Server ===")
             try:
-                start_mcp_server(ready_timeout=90, silence_on_ready=True, print_output=True)
+                start_mcp_server(ready_timeout=90, silence_on_ready=True, stream_output=False)
             except Exception as mcp_err:
-                print(f"\n❌ MCP Server failed to start: {mcp_err}")
+                logger.error("MCP Server failed to start: %s", mcp_err)
                 cleanup_cluster()
                 sys.exit(1)
             
@@ -129,9 +173,8 @@ def main():
             from launch_experiment import run_sre_agent, export_json_results
             
             # Step 2: Run your experiment (new event loop for async execution)
-            print("\n" + "="*60)
-            print("STEP 2: Run SRE Agent")
-            print("="*60)
+
+            logger.info("=== STEP 2: Run SRE Agent ===")
 
             asyncio.run(
                 run_experiment(
@@ -143,30 +186,27 @@ def main():
                     wait_time_before_running_agent=i["wait_before_launch_agent"],
                     agent_configuration_name="Plain ReAct",
                     run_sre_agent_func=run_sre_agent,
-                    export_json_results_func=export_json_results
+                    export_json_results_func=export_json_results,
+                    results_group_dir=results_group_path
                 )
             )
             
             # Step 3: Cleanup
-            print("\n" + "="*60)
-            print("STEP 3: Cleanup")
-            print("="*60)
+            logger.info("=== STEP 3: Cleanup ===")
             
             # Cleanup MCP server first then cluster
             cleanup_mcp_server()
             cleanup_cluster()
             
-            print("\n✅ All done!")
+            logger.info("All cleanup steps completed")
             
         except KeyboardInterrupt:
-            print("\n\n⚠️  Interrupted by user")
+            logger.warning("Interrupted by user; performing cleanup")
             cleanup_mcp_server()
             cleanup_cluster()
             sys.exit(130)
         except Exception as e:
-            print(f"\n\n❌ Error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("Experiment execution failed: %s", e)
             cleanup_mcp_server()
             cleanup_cluster()
             sys.exit(1)

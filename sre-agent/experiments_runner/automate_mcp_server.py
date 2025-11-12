@@ -3,12 +3,16 @@ import re
 import sys
 import time
 import signal
+import logging
 from pathlib import Path
 
 import pexpect
 
 
 _MCP_CHILD = None  # Global handle to the spawned MCP server (pexpect.spawn)
+
+
+logger = logging.getLogger(__name__)
 
 
 def _detect_ready_patterns(child, timeout=60):
@@ -42,7 +46,7 @@ def start_mcp_server(
     cwd: str | Path | None = None,
     ready_timeout: int = 60,
     silence_on_ready: bool = True,
-    print_output: bool = True,
+    stream_output: bool = False,
 ):
     """
     Start the MCP server as a background process, wait until it's listening,
@@ -53,8 +57,8 @@ def start_mcp_server(
         server_path: Path to MCP server script (mcp_server.py). Defaults to repo's MCP-server/mcp_server.py.
         cwd: Working directory to run from. Defaults to repo root.
         ready_timeout: Seconds to wait for readiness logs.
-        silence_on_ready: If True, stop streaming server output once ready.
-        print_output: If True, stream server stdout to this process until ready.
+    silence_on_ready: If True, stop streaming server output once ready.
+    stream_output: If True, stream server stdout to this process until ready.
 
     Returns:
         tuple[pexpect.spawn, str|None]: (child process handle, detected server URL if any)
@@ -83,11 +87,9 @@ def start_mcp_server(
 
     cmd = f"{python_executable} {server_path}"
 
-    print("\n" + "=" * 60)
-    print("Starting MCP server")
-    print("=" * 60)
-    print(f"Working directory: {cwd}")
-    print(f"Command: {cmd}")
+    logger.info("Starting MCP server")
+    logger.info("Working directory: %s", cwd)
+    logger.info("Command: %s", cmd)
 
     # Spawn the process attached to a PTY so we can read logs and later silence them
     child = pexpect.spawn(
@@ -97,7 +99,7 @@ def start_mcp_server(
         cwd=str(cwd),
     )
 
-    if print_output:
+    if stream_output:
         child.logfile_read = sys.stdout
 
     ready, url = _detect_ready_patterns(child, timeout=ready_timeout)
@@ -108,6 +110,10 @@ def start_mcp_server(
             child.close(force=True)
         except Exception:
             pass
+        if tail:
+            logger.error("MCP server failed to start. Last lines before timeout:\n%s", "\n".join(tail))
+        else:
+            logger.error("MCP server failed to start and produced no output")
         raise RuntimeError(
             "Failed to detect MCP server readiness within timeout.\n" +
             ("Last lines:\n" + "\n".join(tail) if tail else "No output captured.")
@@ -119,8 +125,9 @@ def start_mcp_server(
 
     _MCP_CHILD = child
 
-    print("\n✅ MCP server is listening" + (f" at {url}" if url else "") )
-    print("Output silenced; continuing your experiment...\n")
+    logger.info("MCP server is listening%s", f" at {url}" if url else "")
+    if silence_on_ready and stream_output:
+        logger.info("Output silenced; continuing your experiment...")
 
     return child, url
 
@@ -144,9 +151,7 @@ def cleanup_mcp_server(grace_period: float = 5.0) -> bool:
     child = _MCP_CHILD
     _MCP_CHILD = None
 
-    print("\n" + "=" * 60)
-    print("Stopping MCP server")
-    print("=" * 60)
+    logger.info("Stopping MCP server")
 
     try:
         # Try graceful termination first
@@ -181,23 +186,24 @@ def cleanup_mcp_server(grace_period: float = 5.0) -> bool:
 
         alive = child.isalive() if hasattr(child, "isalive") else False
         if not alive:
-            print("\n✅ MCP server terminated")
+            logger.info("MCP server terminated")
             return True
         else:
-            print("\n⚠️ MCP server may still be running")
+            logger.warning("MCP server may still be running")
             return False
 
     except Exception as e:
-        print(f"\n⚠️ Error while stopping MCP server: {e}")
+        logger.exception("Error while stopping MCP server: %s", e)
         return False
 
 
 if __name__ == "__main__":
     # Simple manual test helper
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
     try:
-        _, url = start_mcp_server(ready_timeout=90)
-        print(f"MCP server ready: {url or '(url not detected)'}")
-        print("Sleeping for 5 seconds before cleanup...")
+        _, url = start_mcp_server(ready_timeout=90, stream_output=True)
+        logger.info("MCP server ready: %s", url or "(url not detected)")
+        logger.info("Sleeping for 5 seconds before cleanup...")
         time.sleep(5)
     finally:
         cleanup_mcp_server()
