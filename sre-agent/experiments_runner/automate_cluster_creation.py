@@ -1,9 +1,14 @@
 import sys
 import time
+import logging
 import pexpect
 from pathlib import Path
 
-def run_command_with_wait(command, timeout=600, encoding='utf-8'):
+
+logger = logging.getLogger(__name__)
+
+
+def run_command_with_wait(command, timeout=600, encoding='utf-8', stream_output=False):
     """
     Run a command and wait for it to complete.
     
@@ -11,34 +16,44 @@ def run_command_with_wait(command, timeout=600, encoding='utf-8'):
         command: The command to execute
         timeout: Maximum time to wait for command completion (in seconds)
         encoding: Character encoding for output
+        stream_output: If True, stream the subprocess output to stdout
         
     Returns:
         tuple: (exit_code, output)
     """
-    print(f"\n{'='*60}")
-    print(f"Running: {command}")
-    print(f"{'='*60}\n")
-    
+    logger.info("Running command: %s", command)
+
     child = pexpect.spawn(command, encoding=encoding, timeout=timeout)
-    child.logfile_read = sys.stdout
+    if stream_output:
+        child.logfile_read = sys.stdout
     
     try:
         # Wait for the process to finish
         child.expect(pexpect.EOF)
+        output = child.before
         child.close()
-        return child.exitstatus, child.before
+        if output:
+            logger.debug("Command output for '%s':\n%s", command, output.strip())
+        return child.exitstatus, output
     except pexpect.TIMEOUT:
-        print(f"\n\nCommand timed out after {timeout} seconds")
+        logger.error("Command timed out after %s seconds: %s", timeout, command)
         child.close(force=True)
         return -1, None
     except Exception as e:
-        print(f"\n\nError running command: {e}")
+        logger.exception("Error running command '%s': %s", command, e)
         child.close(force=True)
         return -1, None
 
 
-def setup_cluster_and_aiopslab(problem_id, kind_config_path=None, aiopslab_dir=None, 
-                                cluster_timeout=600, setup_timeout=300):
+def setup_cluster_and_aiopslab(
+    problem_id,
+    kind_config_path=None,
+    aiopslab_dir=None,
+    cluster_timeout=600,
+    setup_timeout=300,
+    stream_cluster_output=False,
+    stream_cli_output=False,
+):
     """
     Set up the experiment environment: create kind cluster and initialize AIOpsLab.
     
@@ -49,6 +64,8 @@ def setup_cluster_and_aiopslab(problem_id, kind_config_path=None, aiopslab_dir=N
                       If None, uses the directory of this script
         cluster_timeout: Timeout for cluster creation in seconds
         setup_timeout: Timeout for problem setup in seconds
+    stream_cluster_output: If True, stream kind cluster command output to stdout
+    stream_cli_output: If True, stream AIOpsLab CLI output to stdout
         
     Returns:
         bool: True if setup successful, False otherwise
@@ -61,12 +78,10 @@ def setup_cluster_and_aiopslab(problem_id, kind_config_path=None, aiopslab_dir=N
     else:
         aiopslab_dir = Path(aiopslab_dir).resolve()
     
-    print(f"AIOpsLab directory: {aiopslab_dir}")
+    logger.info("AIOpsLab directory: %s", aiopslab_dir)
     
     # Step 1: Create kind cluster
-    print("\n" + "="*60)
-    print("Creating kind cluster")
-    print("="*60)
+    logger.info("Creating kind cluster")
     
     if kind_config_path is None:
         kind_config_path = aiopslab_dir / "kind" / "kind-config-x86.yaml"
@@ -74,66 +89,78 @@ def setup_cluster_and_aiopslab(problem_id, kind_config_path=None, aiopslab_dir=N
         kind_config_path = Path(kind_config_path)
     
     if not kind_config_path.exists():
-        print(f"❌ Error: Kind config file not found at {kind_config_path}")
+        logger.error("Kind config file not found at %s", kind_config_path)
         return False
     
     cluster_command = f"kind create cluster --config {kind_config_path}"
-    exit_code, _ = run_command_with_wait(cluster_command, timeout=cluster_timeout)
+    exit_code, _ = run_command_with_wait(
+        cluster_command,
+        timeout=cluster_timeout,
+        stream_output=stream_cluster_output,
+    )
     
     if exit_code != 0:
-        print(f"\n❌ Failed to create kind cluster (exit code: {exit_code})")
+        logger.error("Failed to create kind cluster (exit code: %s)", exit_code)
         return False
     
-    print("\n✅ Kind cluster created successfully")
+    logger.info("Kind cluster created successfully")
     
     # Give cluster a moment to stabilize
-    print("\nWaiting 5 seconds for cluster to stabilize...")
+    logger.info("Waiting 5 seconds for cluster to stabilize...")
     time.sleep(5)
     
     # Step 2: Start AIOpsLab CLI in background
-    print("\n" + "="*60)
-    print("Starting AIOpsLab CLI")
-    print("="*60)
-    
+    logger.info("Starting AIOpsLab CLI")
+
     # Change to AIOpsLab directory and run poetry from there
     command = f"cd {aiopslab_dir} && poetry run python cli.py"
-    print(f"\nStarting: {command}")
+    logger.info("Starting CLI command: %s", command)
     
     # Use bash to execute the command with cd and &&
     child = pexpect.spawn('/bin/bash', ['-c', command], encoding='utf-8', timeout=setup_timeout)
-    child.logfile_read = sys.stdout
+    if stream_cli_output:
+        child.logfile_read = sys.stdout
     
     try:
         # Wait for the first prompt
-        print("Waiting for CLI to start...")
+        logger.info("Waiting for CLI to start...")
         child.expect('aiopslab>', timeout=30)
-        print("✓ CLI started")
+        logger.info("CLI started")
+        if child.before:
+            logger.debug("CLI initial output:\n%s", child.before.strip())
         
         # Send the start command
         start_cmd = f"start {problem_id}"
-        print(f"\n[Sending]: {start_cmd}")
+        logger.info("Sending CLI command: %s", start_cmd)
         child.sendline(start_cmd)
         
-        print(f"\nWaiting for problem initialization (timeout: {setup_timeout}s)...")
-        print("(This includes loading the problem, displaying context, and first env message)")
+        logger.info(
+            "Waiting for problem initialization (timeout: %s s)...",
+            setup_timeout,
+        )
+        logger.debug(
+            "Initialization includes loading the problem, displaying context, and the first env message",
+        )
         
         child.expect('aiopslab>', timeout=setup_timeout)
-        print("✓ Context displayed")
+        logger.info("Context displayed")
+        if child.before:
+            logger.debug("CLI output before context prompt:\n%s", child.before.strip())
         
         child.expect('aiopslab>', timeout=setup_timeout)
-        print("✓ Problem fully initialized and ready for actions")
+        logger.info("Problem fully initialized and ready for actions")
+        if child.before:
+            logger.debug("CLI output before ready prompt:\n%s", child.before.strip())
         
-        print("\n✅ Environment ready")
-        print(f"✅ Problem '{problem_id}' initialized")
-        print("\n" + "="*60)
-        print("CLI is running in background. Run your experiments now.")
-        print("Call cleanup_cluster() when done.")
-        print("="*60 + "\n")
+        logger.info("Environment ready")
+        logger.info("Problem '%s' initialized", problem_id)
+        logger.info("CLI is running in background. Run your experiments now.")
+        logger.info("Call cleanup_cluster() when done.")
         
         return True
         
     except Exception as e:
-        print(f"\n❌ Failed to initialize AIOpsLab: {e}")
+        logger.exception("Failed to initialize AIOpsLab: %s", e)
         try:
             child.close(force=True)
         except:
@@ -141,26 +168,32 @@ def setup_cluster_and_aiopslab(problem_id, kind_config_path=None, aiopslab_dir=N
         return False
 
 
-def cleanup_cluster(cluster_timeout=120):
+def cleanup_cluster(cluster_timeout=120, stream_output=False):
     """
     Delete the kind cluster.
     
     Args:
         cluster_timeout: Timeout for cluster deletion in seconds
+        stream_output: If True, stream the deletion command output to stdout
         
     Returns:
         bool: True if successful, False otherwise
     """
-    print("\n" + "="*60)
-    print("Deleting kind cluster")
-    print("="*60)
+    logger.info("Deleting kind cluster")
     
     delete_command = "kind delete cluster"
-    delete_exit_code, _ = run_command_with_wait(delete_command, timeout=cluster_timeout)
+    delete_exit_code, _ = run_command_with_wait(
+        delete_command,
+        timeout=cluster_timeout,
+        stream_output=stream_output,
+    )
     
     if delete_exit_code != 0:
-        print(f"\n⚠️  Failed to delete kind cluster (exit code: {delete_exit_code})")
+        logger.warning(
+            "Failed to delete kind cluster (exit code: %s)",
+            delete_exit_code,
+        )
         return False
     else:
-        print("\n✅ Kind cluster deleted successfully")
+        logger.info("Kind cluster deleted successfully")
         return True
