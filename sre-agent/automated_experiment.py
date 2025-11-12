@@ -74,7 +74,6 @@ def get_today_completions_usage(
     import os
 
     api_key = os.getenv("OPENAI_ADMIN_API_KEY")
-    print(api_key)
 
     if not api_key:
         logger.error("OPENAI_ADMIN_API_KEY environment variable is missing.")
@@ -181,7 +180,7 @@ def main():
 
     ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
     load_dotenv(dotenv_path=ENV_PATH)
-    
+
     AIOPSLAB_DIR = "/home/vm-kubernetes/AIOpsLab"
 
     fault_scenarios = load_fault_scenarios()
@@ -221,7 +220,8 @@ def main():
         if usage["total_tokens"] >= 2000000:
             logger.error("Token usage exceeded limit (2,000,000). Aborting experiment.")
             sys.exit(1)
-
+        
+        logger.info("========= Experiment %d/%d =========", fault_scenarios.index(i) + 1, len(fault_scenarios))
         logger.info("Scenario: %s", i["scenario"])
         logger.info("Fault: %s", i["fault_type"])
 
@@ -278,6 +278,8 @@ def main():
             cleanup_cluster()
             
             logger.info("All cleanup steps completed")
+            logger.info("Pausing briefly before launching the next experiment...")
+            time.sleep(10)
             
         except KeyboardInterrupt:
             logger.warning("Interrupted by user; performing cleanup")
