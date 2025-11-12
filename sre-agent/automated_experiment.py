@@ -16,6 +16,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import sys
 import asyncio
+import requests
 
 # Configure logging for the SRE Agent script
 logging.basicConfig(
@@ -28,9 +29,17 @@ logging.getLogger("mcp.client.streamable_http").setLevel(logging.WARNING)
 logger = logging.getLogger("automated_experiment")
 
 def get_experiment_dir_path(dir_name: str, experiment_path: Optional[str] = None):
+    """
+    Returns the directory path for storing experiment results.
+    Creates the directory if it does not exist.
 
-    load_dotenv(dotenv_path="../.env")
+    Args:
+        dir_name (str): Name of the experiment batch directory.
+        experiment_path (Optional[str]): Custom base path for results. If None, uses RESULTS_PATH env var or 'results'.
 
+    Returns:
+        Path: Path object for the experiment directory.
+    """
     if experiment_path:
         output_dir = experiment_path
     else:
@@ -46,6 +55,62 @@ def get_experiment_dir_path(dir_name: str, experiment_path: Optional[str] = None
     experiment_dir_path.mkdir(parents=True, exist_ok=True)
 
     return experiment_dir_path
+
+import datetime
+import requests
+
+def get_today_completions_usage(
+    bucket_width: str = "1d",
+) -> dict:
+    """
+    Fetches today's OpenAI organization completions usage (UTC-based).
+
+    Args:
+        bucket_width (str): Width of usage bucket, default is "1d".
+
+    Returns:
+        dict: Dictionary with input_tokens, output_tokens, and total_tokens.
+    """
+    import os
+
+    api_key = os.getenv("OPENAI_ADMIN_API_KEY")
+    print(api_key)
+
+    if not api_key:
+        logger.error("OPENAI_ADMIN_API_KEY environment variable is missing.")
+
+    start_dt = datetime.datetime.now(datetime.UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    end_dt = start_dt + datetime.timedelta(days=1)
+
+    params: list[tuple[str, int | str]] = [
+        ("start_time", int(start_dt.timestamp())),
+        ("end_time", int(end_dt.timestamp())),
+        ("bucket_width", bucket_width),
+    ]
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    response = requests.get(
+        "https://api.openai.com/v1/organization/usage/completions",
+        params=params,
+        headers=headers,
+        timeout=30,
+    )
+
+    response.raise_for_status()
+    json_response = response.json()
+
+    input_tokens = json_response["data"][0]["results"][0]["input_tokens"]
+    output_tokens = json_response["data"][0]["results"][0]["output_tokens"]
+
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens
+    }
 
 async def run_experiment(
     app_name: str,
@@ -81,7 +146,7 @@ async def run_experiment(
     )
 
     # Save results
-    date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     safe_experiment_name = experiment_name.replace(" ", "-")
     output_file = f"{date_str}_{safe_experiment_name}.json"
 
@@ -114,6 +179,9 @@ async def run_experiment(
 
 def main():
 
+    ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+    load_dotenv(dotenv_path=ENV_PATH)
+    
     AIOPSLAB_DIR = "/home/vm-kubernetes/AIOpsLab"
 
     fault_scenarios = load_fault_scenarios()
@@ -133,7 +201,7 @@ def main():
         logger.info("Aborting execution at user request.")
         return
 
-    default_batch_name = datetime.now().strftime("batch-%Y%m%d-%H%M%S")
+    default_batch_name = datetime.datetime.now().strftime("batch-%Y%m%d-%H%M%S")
     batch_dir_input = input(
         f"Enter directory name for this experiment batch [{default_batch_name}]: "
     ).strip()
@@ -143,6 +211,17 @@ def main():
     logger.info("Results will be stored under: %s", results_group_path)
 
     for i in fault_scenarios:
+
+        # Check today's token usage before running each experiment
+        usage = get_today_completions_usage()
+        logger.info(
+            "Current token usage: input=%d, output=%d, total=%d",
+            usage["input_tokens"], usage["output_tokens"], usage["total_tokens"]
+        )
+        if usage["total_tokens"] >= 2000000:
+            logger.error("Token usage exceeded limit (2,000,000). Aborting experiment.")
+            sys.exit(1)
+
         logger.info("Scenario: %s", i["scenario"])
         logger.info("Fault: %s", i["fault_type"])
 
