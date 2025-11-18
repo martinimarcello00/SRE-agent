@@ -2,6 +2,7 @@
 import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
+from typing import Any, Mapping
 
 # Get the path to the root directory of the repository
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
@@ -22,6 +23,18 @@ MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", 8))
 
 # RCA tasks per iteration
 RCA_TASKS_PER_ITERATION = int(os.environ.get("RCA_TASKS_PER_ITERATION", 3))
+
+def apply_config_overrides(overrides: Mapping[str, Any]) -> None:
+    """Update runtime knobs (called before launching each agent run)."""
+    global MAX_TOOL_CALLS, RCA_TASKS_PER_ITERATION
+
+    if "MAX_TOOL_CALLS" in overrides:
+        os.environ["MAX_TOOL_CALLS"] = str(overrides["MAX_TOOL_CALLS"])
+    if "RCA_TASKS_PER_ITERATION" in overrides:
+        os.environ["RCA_TASKS_PER_ITERATION"] = str(overrides["RCA_TASKS_PER_ITERATION"])
+
+    MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", MAX_TOOL_CALLS))
+    RCA_TASKS_PER_ITERATION = int(os.environ.get("RCA_TASKS_PER_ITERATION", RCA_TASKS_PER_ITERATION))
 
 # MCP Server Configuration
 MCP_CONFIG = {

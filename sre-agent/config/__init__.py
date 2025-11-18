@@ -6,7 +6,8 @@ from .settings import (
     TOOLS_ALLOWED,
     K8S_TOOLS_ALLOWED,
     CUSTOM_TOOLS_ALLOWED,
-    RCA_TASKS_PER_ITERATION
+    RCA_TASKS_PER_ITERATION,
+    apply_config_overrides
 )
 
 __all__ = [
@@ -16,5 +17,6 @@ __all__ = [
     'TOOLS_ALLOWED',
     'K8S_TOOLS_ALLOWED',
     'CUSTOM_TOOLS_ALLOWED',
-    'RCA_TASKS_PER_ITERATION'
+    'RCA_TASKS_PER_ITERATION',
+    'apply_config_overrides'
 ]
