@@ -20,7 +20,7 @@ import string
 
 from dotenv import load_dotenv
 
-from utils import get_today_completions_usage
+from utils import TelegramNotification, get_today_completions_usage
 from config import apply_config_overrides
 
 # Configure logging for the SRE Agent script
@@ -73,7 +73,7 @@ async def run_experiment(
     export_json_results_func,
     results_group_dir: Optional[Path] = None,
     trace_name: Optional[str] = None,
-):
+) -> tuple[dict, Path]:
     
     logger.info(
         "Waiting %s seconds before running the SRE agent",
@@ -93,6 +93,9 @@ async def run_experiment(
         trace_name=experiment_name,
         agent_configuration_name=agent_configuration_name
     )
+
+    logger.info("Waiting 15 seconds to allow LangSmith to import final experiment data before saving results...")
+    time.sleep(15)
 
     # Save results
     date_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -125,6 +128,8 @@ async def run_experiment(
 
     logger.info("Results saved to %s", output_file_path)
     logger.info("Experiment completed successfully")
+
+    return enriched_result, output_file_path
 
 def main():
 
@@ -172,6 +177,32 @@ def main():
     ).strip()
     batch_dir_name = batch_dir_input or default_batch_name
 
+    enable_notifications = False
+    telegram_notifier: TelegramNotification | None = None
+    telegram_handler: logging.Handler | None = None
+    telegram_choice = input("Enable Telegram notifications? [y/N]: ").strip().lower()
+    if telegram_choice in {"y", "yes"}:
+        telegram_notifier = TelegramNotification()
+        try:
+            telegram_handler = telegram_notifier.create_log_handler()
+            telegram_handler.setLevel(logging.ERROR)
+            formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+            telegram_handler.setFormatter(formatter)
+            logging.getLogger().addHandler(telegram_handler)
+
+            telegram_notifier.send_telegram_message(
+                f"✅ Telegram notifications enabled for SRE automated experiments ({batch_dir_name})"
+            )
+            enable_notifications = True
+        except RuntimeError as exc:
+            logger.error("Telegram notifications disabled: %s", exc)
+            telegram_notifier = None
+        except Exception as exc:
+            logger.error("Failed to initialize Telegram notifications: %s", exc)
+            if telegram_handler:
+                logging.getLogger().removeHandler(telegram_handler)
+            telegram_notifier = None
+
     results_group_path = get_experiment_dir_path(batch_dir_name, None)
     logger.info("Results will be stored under: %s", results_group_path)
 
@@ -179,6 +210,14 @@ def main():
     total_configs = len(agents_configurations)
 
     for scenario_idx, scenario in enumerate(fault_scenarios, start=1):
+
+        if enable_notifications and telegram_notifier:
+            try:
+                telegram_notifier.send_telegram_message(
+                    f"🚀 Starting scenario {scenario_idx}/{total_scenarios}: {scenario.get('scenario', 'Unknown Scenario')}"
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("Failed to send Telegram start message: %s", exc)
 
         pre_run_usage = get_today_completions_usage()
         logger.info(
@@ -190,6 +229,13 @@ def main():
         )
         if pre_run_usage["total_tokens"] >= 2_000_000:
             logger.error("Token usage exceeded limit (2,000,000). Aborting experiment.")
+            if enable_notifications and telegram_notifier:
+                try:
+                    telegram_notifier.send_telegram_message(
+                        "❌ Experiment aborted: token usage exceeded budget."
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("Failed to send Telegram abort message: %s", exc)
             sys.exit(1)
 
         logger.info("========= Scenario %d/%d =========", scenario_idx, total_scenarios)
@@ -217,6 +263,13 @@ def main():
             except Exception as mcp_err:
                 logger.error("MCP Server failed to start: %s", mcp_err)
                 cleanup_cluster()
+                if enable_notifications and telegram_notifier:
+                    try:
+                        telegram_notifier.send_telegram_message(
+                            f"❌ Scenario '{scenario.get('scenario', 'Unknown Scenario')}' failed: MCP server startup error."
+                        )
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("Failed to send Telegram MCP error message: %s", exc)
                 sys.exit(1)
 
             # Import AFTER MCP server is running, before starting any event loop
@@ -242,6 +295,15 @@ def main():
                     agent_name,
                 )
 
+                experiment_label = f"{agent_name} - {scenario.get('app_name', scenario.get('scenario', 'Unknown App'))} - {scenario.get('fault_type', 'Unknown Fault')}"
+                if enable_notifications and telegram_notifier:
+                    try:
+                        telegram_notifier.send_telegram_message(
+                            f"🧪 Starting experiment '{experiment_label}' ({config_label})"
+                        )
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("Failed to send Telegram experiment start message: %s", exc)
+
                 overrides_to_log = {
                     key: agent_conf[key]
                     for key in ("MAX_TOOL_CALLS", "RCA_TASKS_PER_ITERATION")
@@ -263,9 +325,16 @@ def main():
                 )
                 if usage["total_tokens"] >= 2_000_000:
                     logger.error("Token usage exceeded limit (2,000,000). Aborting experiment.")
+                    if enable_notifications and telegram_notifier:
+                        try:
+                            telegram_notifier.send_telegram_message(
+                                "❌ Experiment aborted mid-run: token usage exceeded budget."
+                            )
+                        except Exception as exc:  # pragma: no cover
+                            logger.warning("Failed to send Telegram budget warning: %s", exc)
                     sys.exit(1)
 
-                asyncio.run(
+                enriched_result, output_file_path = asyncio.run(
                     run_experiment(
                         fault_name=scenario["fault_type"],
                         app_name=scenario["app_name"],
@@ -288,6 +357,31 @@ def main():
                     scenario.get("scenario", "Unknown Scenario"),
                 )
 
+                if enable_notifications and telegram_notifier:
+                    try:
+                        final_report = enriched_result.get("final_report", {}) if isinstance(enriched_result, dict) else {}
+                        root_cause = final_report.get("root_cause", "Unknown root cause")
+                        evidence_summary = final_report.get("evidence_summary", "No summary available")
+                        stats = enriched_result.get("stats", {}) if isinstance(enriched_result, dict) else {}
+                        total_tokens = stats.get("total_tokens", "N/A")
+                        exec_seconds = stats.get("execution_time_seconds", "N/A")
+                        langsmith_url = stats.get("langsmith_url", "N/A")
+                        telegram_notifier.send_telegram_message(
+                            "\n".join(
+                                [
+                                    f"✅ Experiment '{enriched_result.get('experiment_name', experiment_label)}' completed.",
+                                    f"Root cause: {root_cause}",
+                                    f"Summary: {evidence_summary}",
+                                    f"Execution time: {exec_seconds} seconds",
+                                    f"Total tokens: {total_tokens}",
+                                    f"LangSmith run: {langsmith_url}",
+                                ]
+                            )
+                        )
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("Failed to send Telegram experiment completion message: %s", exc)
+
+                logger.info("Pausing briefly before launching the next experiment...")
                 time.sleep(10)
 
             logger.info(
@@ -295,6 +389,14 @@ def main():
                 total_configs,
                 scenario.get("scenario", "Unknown Scenario"),
             )
+
+            if enable_notifications and telegram_notifier:
+                try:
+                    telegram_notifier.send_telegram_message(
+                        f"✅ Scenario '{scenario.get('scenario', 'Unknown Scenario')}' completed."
+                    )
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("Failed to send Telegram completion message: %s", exc)
 
             # Step 3: Cleanup
             logger.info("=== STEP 3: Cleanup ===")
@@ -304,20 +406,40 @@ def main():
             cleanup_cluster()
 
             logger.info("All cleanup steps completed")
-            logger.info("Pausing briefly before launching the next experiment...")
+            logger.info("Pausing briefly before launching the next scenario...")
             time.sleep(10)
 
         except KeyboardInterrupt:
             logger.warning("Interrupted by user; performing cleanup")
             cleanup_mcp_server()
             cleanup_cluster()
+            if enable_notifications and telegram_notifier:
+                try:
+                    telegram_notifier.send_telegram_message("⚠️ Experiment interrupted by user.")
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("Failed to send Telegram interrupt message: %s", exc)
             sys.exit(130)
         except Exception as e:
             logger.exception("Experiment execution failed: %s", e)
             cleanup_mcp_server()
             cleanup_cluster()
+            if enable_notifications and telegram_notifier:
+                try:
+                    telegram_notifier.send_telegram_message(
+                        f"❌ Experiment error in scenario '{scenario.get('scenario', 'Unknown Scenario')}': {e}"
+                    )
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("Failed to send Telegram exception message: %s", exc)
             sys.exit(1)
 
+    if enable_notifications and telegram_notifier:
+        try:
+            telegram_notifier.send_telegram_message("🎉 Automated experiment batch completed successfully.")
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Failed to send Telegram final message: %s", exc)
+
+    if telegram_handler:
+        logging.getLogger().removeHandler(telegram_handler)
 
 if __name__ == "__main__":
     main()

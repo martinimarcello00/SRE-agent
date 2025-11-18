@@ -144,6 +144,8 @@ def get_experiment_metrics(experiment_name: str, exec_time: float | int) -> dict
         agent_stats[agent_name]["cost"] += float((agent_run.completion_cost or 0.0))
         agent_stats[agent_name]["runs_count"] += 1
     
+    run_url = getattr(run, "url", None)
+
     # Build final metrics dictionary
     return {
         "run_id": str(run.id),
@@ -152,6 +154,7 @@ def get_experiment_metrics(experiment_name: str, exec_time: float | int) -> dict
         "execution_time_seconds": execution_time,
         "total_tokens": run.total_tokens or 0,
         "total_cost": sum(s["cost"] for s in agent_stats.values()),
+        "langsmith_url": run_url,
         "agent_stats": agent_stats
     }
 
