@@ -214,7 +214,7 @@ def main():
         if enable_notifications and telegram_notifier:
             try:
                 telegram_notifier.send_telegram_message(
-                    f"🚀 Starting scenario {scenario_idx}/{total_scenarios}: {scenario.get('scenario', 'Unknown Scenario')}"
+                    f"🚀 Starting scenario {scenario_idx}/{total_scenarios}: {scenario.get('scenario', 'Unknown Scenario')} - {scenario.get('fault_type', 'Unknown fault type')}"
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Failed to send Telegram start message: %s", exc)
@@ -393,7 +393,7 @@ def main():
             if enable_notifications and telegram_notifier:
                 try:
                     telegram_notifier.send_telegram_message(
-                        f"✅ Scenario '{scenario.get('scenario', 'Unknown Scenario')}' completed."
+                        f"✅ Scenario '{scenario.get('scenario', 'Unknown Scenario')} - {scenario.get('fault_type', 'Unknown fault type')}' completed."
                     )
                 except Exception as exc:  # pragma: no cover
                     logger.warning("Failed to send Telegram completion message: %s", exc)
