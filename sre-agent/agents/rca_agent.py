@@ -7,7 +7,7 @@ from models import RcaAgentState, RCAAgentExplaination
 from prompts import RCA_AGENT_PROMPT, EXPLAIN_ANALYSIS_PROMPT
 from tools import TOOLS, submit_final_diagnosis
 from utils import count_tool_calls, count_non_submission_tool_calls
-from config import GPT5_MINI, MAX_TOOL_CALLS
+from config import GPT5_MINI, settings as config_settings
 
 
 # Combine MCP tools with submission tool
@@ -25,16 +25,18 @@ async def rcaAgent(state: RcaAgentState) -> dict:
 
     # Build budget status message
     budget_status = ""
-    if tool_call_count >= MAX_TOOL_CALLS:
+    max_tool_calls = config_settings.MAX_TOOL_CALLS
+
+    if tool_call_count >= max_tool_calls:
         budget_status = f"""
-⚠️ **BUDGET EXCEEDED**: You have made {tool_call_count}/{MAX_TOOL_CALLS} tool calls.
+⚠️ **BUDGET EXCEEDED**: You have made {tool_call_count}/{max_tool_calls} tool calls.
 
 You MUST now call submit_final_diagnosis with your best conclusion based on the evidence gathered so far.
 Do NOT make any more tool calls. Submit your diagnosis immediately.
 """
-    elif tool_call_count >= MAX_TOOL_CALLS - 2:
+    elif tool_call_count >= max_tool_calls - 2:
         budget_status = f"""
-⚠️ **BUDGET WARNING**: You have made {tool_call_count}/{MAX_TOOL_CALLS} tool calls. You should prepare to submit your diagnosis soon.
+⚠️ **BUDGET WARNING**: You have made {tool_call_count}/{max_tool_calls} tool calls. You should prepare to submit your diagnosis soon.
 """
 
     prompt = SystemMessage(content=RCA_AGENT_PROMPT.format(
@@ -44,7 +46,7 @@ Do NOT make any more tool calls. Submit your diagnosis immediately.
         resource_type=task.resource_type,
         target_resource=task.target_resource,
         suggested_tools=suggested_tools_str,
-        investigation_budget=MAX_TOOL_CALLS,
+        investigation_budget=max_tool_calls,
         tool_calls_count=tool_call_count,
         budget_status=budget_status
     ))

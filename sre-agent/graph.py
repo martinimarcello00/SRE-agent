@@ -2,7 +2,7 @@
 from langgraph.graph import START, END, StateGraph
 from langgraph.types import Send
 import logging
-from config import RCA_TASKS_PER_ITERATION
+from config import settings as config_settings
 
 from models import SreParentState
 from agents import (
@@ -72,9 +72,10 @@ def update_rca_task_status(state: SreParentState) -> dict:
             logger.warning(f"Requested RCA tasks already completed or missing: {sorted(missing_priorities)}")
     else:
         # First iteration: select first pending tasks for parallel execution
-        logger.info(f"Updating status for first {RCA_TASKS_PER_ITERATION} tasks.")
+        batch_size = config_settings.RCA_TASKS_PER_ITERATION
+        logger.info(f"Updating status for first {batch_size} tasks.")
         pending_tasks = [task for task in rca_tasks if task.status == "pending"]
-        selected_tasks = pending_tasks[:RCA_TASKS_PER_ITERATION]
+        selected_tasks = pending_tasks[:batch_size]
 
     # Mark selected tasks as "in_progress" and persist other status transitions
     updated_tasks = []
@@ -159,7 +160,8 @@ def rca_router(state: SreParentState) -> list[Send]:
         # This can happen if tasks_to_be_executed was empty and all tasks were already pending
         # This is the entry point for the very first iteration
         logger.info("RCA Router: No 'in_progress' tasks found. Selecting pending tasks for first iteration.")
-        selected_tasks = pending_tasks[:RCA_TASKS_PER_ITERATION]
+        batch_size = config_settings.RCA_TASKS_PER_ITERATION
+        selected_tasks = pending_tasks[:batch_size]
         if not selected_tasks:
             logger.warning("RCA Router: No tasks to execute. Routing to supervisor.")
             supervisor_input = {
