@@ -345,19 +345,28 @@ def main():
                     try:
                         final_report = enriched_result.get("final_report", {}) if isinstance(enriched_result, dict) else {}
                         root_cause = final_report.get("root_cause", "Unknown root cause")
-                        evidence_summary = final_report.get("evidence_summary", "No summary available")
+                        detection = final_report.get("detection", False)
+                        localization = final_report.get("localization", [])
                         stats = enriched_result.get("stats", {}) if isinstance(enriched_result, dict) else {}
                         total_tokens = stats.get("total_tokens", "N/A")
                         exec_seconds = stats.get("execution_time_seconds", "N/A")
                         langsmith_url = stats.get("langsmith_url", "N/A")
+                        
+                        # Format localization field (sorted, or indicate if empty)
+                        if localization:
+                            localization_str = ", ".join(sorted(localization))
+                        else:
+                            localization_str = "No problems detected" if not detection else "Unable to localize"
+                        
                         telegram_notifier.send_telegram_message(
                             "\n".join(
                                 [
                                     f"✅ Experiment '{enriched_result.get('experiment_name', experiment_label)}' completed.",
+                                    f"Detection: {'✅ Yes' if detection else '❌ No'}",
+                                    f"Localization: {localization_str}",
                                     f"Root cause: {root_cause}",
-                                    f"Summary: {evidence_summary}",
-                                    f"Execution time: {exec_seconds} seconds",
-                                    f"Total tokens: {total_tokens}",
+                                    f"Execution time: {int(round(exec_seconds))} seconds",
+                                    f"Total tokens: {int(round(total_tokens))}",
                                     f"LangSmith run: {langsmith_url}",
                                 ]
                             )
