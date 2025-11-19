@@ -116,8 +116,12 @@ def setup_cluster_and_aiopslab(
     command = f"cd {aiopslab_dir} && poetry run python cli.py"
     logger.info("Starting CLI command: %s", command)
     
-    # Use bash to execute the command with cd and &&
-    child = pexpect.spawn('/bin/bash', ['-c', command], encoding='utf-8', timeout=setup_timeout)
+    # Use bash with login shell (-l) to properly source environment in tmux
+    # This ensures proper PATH, environment variables, and shell initialization
+    full_command = f"bash -l -c '{command}'"
+    logger.info("Starting CLI with environment: %s", full_command)
+    
+    child = pexpect.spawn('/bin/bash', ['-l', '-c', command], encoding='utf-8', timeout=setup_timeout)
     if stream_cli_output:
         child.logfile_read = sys.stdout
     
