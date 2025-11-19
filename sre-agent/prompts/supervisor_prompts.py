@@ -18,6 +18,13 @@ Each RCA investigation task has been assigned a priority level:
 
 Use the priority information to contextualize findings: results from priority 1 tasks are typically more significant for determining root cause than lower priority investigations.
 
+**Detection & Localization Requirements:**
+- **detection**: Set to `true` if any problem/anomaly was detected in the cluster based on the evidence. Set to `false` only if no issues are found.
+- **localization**: Provide a list of ONLY the faulty/problematic components (service names or pod names) directly identified as the root cause. This should be a minimal, precise list - extract ONLY the specific resource(s) that caused the incident, not all affected resources.
+  - Example: If a service "user-service" has a misconfiguration causing downstream failures, localization = ["user-service"]
+  - Example: If a pod "database-pod-xyz" is failing, localization = ["database-pod-xyz"]
+  - Leave empty/null if the root cause cannot be localized to a specific service or pod.
+
 **Root Cause Expectations:**
 - Build a causal chain that connects symptoms, investigation evidence, and the precise failure mechanism
 - Cite concrete configuration or runtime details (e.g., "service expects port 5432 but database listens on 5433") when diagnosing misconfigurations or integration issues

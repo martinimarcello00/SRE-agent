@@ -32,7 +32,9 @@ def supervisor_agent(state: SupervisorAgentState) -> dict:
                 root_cause="No analysis data available",
                 affected_resources=[],
                 evidence_summary="No symptoms or RCA analysis provided",
-                investigation_summary="Investigation incomplete - insufficient data"
+                investigation_summary="Investigation incomplete - insufficient data",
+                detection=False,
+                localization=None
             ).model_dump()
         }
     
@@ -112,7 +114,9 @@ def supervisor_agent(state: SupervisorAgentState) -> dict:
             root_cause="Investigation Inconclusive",
             affected_resources=[],
             evidence_summary="Supervisor agent failed to make a clear decision.",
-            investigation_summary="Incomplete"
+            investigation_summary="Incomplete",
+            detection=False,
+            localization=None
         )
         return {"final_report": final_report.model_dump(), "tasks_to_be_executed": []}
 

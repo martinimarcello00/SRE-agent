@@ -43,6 +43,11 @@ class FinalReport(BaseModel):
     affected_resources: List[str] = Field(..., description="List of all resources affected by the incident")
     evidence_summary: str = Field(..., description="Summary of evidence from all RCA workers")
     investigation_summary: str = Field(..., description="Overview of the investigation process and findings")
+    detection: bool = Field(..., description="Whether a problem was detected in the cluster")
+    localization: Optional[List[str]] = Field(
+        None,
+        description="List of faulty components (i.e., service names) identified as the root cause (if applicable)"
+    )
 
 class SupervisorDecision(BaseModel):
     """The supervisor's decision to either conclude the investigation or request more data."""
