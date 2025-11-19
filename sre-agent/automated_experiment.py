@@ -3,8 +3,6 @@ from experiments_runner import (
     setup_cluster_and_aiopslab,
     cleanup_cluster,
     load_fault_scenarios,
-    start_mcp_server,
-    cleanup_mcp_server,
     load_agent_configurations
 )
 import asyncio
@@ -256,23 +254,7 @@ def main():
                 logger.error("Setup failed; aborting run")
                 sys.exit(1)
 
-            # Start MCP server (silence output when ready)
-            logger.info("=== Starting MCP Server ===")
-            try:
-                start_mcp_server(ready_timeout=90, silence_on_ready=True, stream_output=False)
-            except Exception as mcp_err:
-                logger.error("MCP Server failed to start: %s", mcp_err)
-                cleanup_cluster()
-                if enable_notifications and telegram_notifier:
-                    try:
-                        telegram_notifier.send_telegram_message(
-                            f"❌ Scenario '{scenario.get('scenario', 'Unknown Scenario')}' failed: MCP server startup error."
-                        )
-                    except Exception as exc:  # pragma: no cover
-                        logger.warning("Failed to send Telegram MCP error message: %s", exc)
-                sys.exit(1)
-
-            # Import AFTER MCP server is running, before starting any event loop
+            # Import AFTER setup complete, before starting any event loop
             from launch_experiment import run_sre_agent, export_json_results
 
             # Step 2: Run your experiment (new event loop for async execution)
@@ -401,8 +383,7 @@ def main():
             # Step 3: Cleanup
             logger.info("=== STEP 3: Cleanup ===")
 
-            # Cleanup MCP server first then cluster
-            cleanup_mcp_server()
+            # Cleanup cluster (MCP server cleanup is handled automatically by MultiServerMCPClient)
             cleanup_cluster()
 
             logger.info("All cleanup steps completed")
@@ -411,7 +392,6 @@ def main():
 
         except KeyboardInterrupt:
             logger.warning("Interrupted by user; performing cleanup")
-            cleanup_mcp_server()
             cleanup_cluster()
             if enable_notifications and telegram_notifier:
                 try:
@@ -421,7 +401,6 @@ def main():
             sys.exit(130)
         except Exception as e:
             logger.exception("Experiment execution failed: %s", e)
-            cleanup_mcp_server()
             cleanup_cluster()
             if enable_notifications and telegram_notifier:
                 try:

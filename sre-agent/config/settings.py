@@ -36,7 +36,10 @@ def apply_config_overrides(overrides: Mapping[str, Any]) -> None:
     MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", MAX_TOOL_CALLS))
     RCA_TASKS_PER_ITERATION = int(os.environ.get("RCA_TASKS_PER_ITERATION", RCA_TASKS_PER_ITERATION))
 
-# MCP Server Configuration
+# MCP Server Configuration - Stdio-based (automatically spawned by client)
+_MCP_SERVER_PATH = os.path.join(root_dir, "MCP-server", "mcp_server.py")
+_MCP_SERVER_DIR = os.path.join(root_dir, "MCP-server")
+
 MCP_CONFIG = {
     "kubernetes": {
         "command": "npx",
@@ -47,8 +50,10 @@ MCP_CONFIG = {
         }
     },
     "cluster_api": {
-        "url": "http://localhost:8000/mcp",
-        "transport": "streamable_http"
+        "command": "poetry",
+        # "args": ["-C", _MCP_SERVER_DIR, "run", "python", _MCP_SERVER_PATH],
+        "args": ["run", "python", _MCP_SERVER_PATH],
+        "transport": "stdio",
     }
 }
 

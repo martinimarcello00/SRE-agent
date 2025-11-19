@@ -1,3 +1,5 @@
+# Use this only if the MCP server uses http streamable protocol
+
 import os
 import re
 import sys
