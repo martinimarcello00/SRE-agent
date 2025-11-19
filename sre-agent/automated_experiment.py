@@ -69,8 +69,9 @@ async def run_experiment(
     agent_configuration_name: str,
     run_sre_agent_func,
     export_json_results_func,
+    batch_name: str,
     results_group_dir: Optional[Path] = None,
-    trace_name: Optional[str] = None,
+    trace_name: Optional[str] = None
 ) -> tuple[dict, Path]:
     
     logger.info(
@@ -79,7 +80,7 @@ async def run_experiment(
     )
     time.sleep(wait_time_before_running_agent)
 
-    experiment_name = f"{agent_configuration_name} - {app_name} - {fault_name}"
+    experiment_name = f"{agent_configuration_name} - {app_name} - {fault_name} ({batch_name})"
     logger.info("Launching experiment: %s", experiment_name)
 
     result, exec_time = await run_sre_agent_func(
@@ -247,7 +248,7 @@ def main():
             success = setup_cluster_and_aiopslab(
                 problem_id=scenario["aiopslab_command"],
                 aiopslab_dir=AIOPSLAB_DIR,
-                stream_cli_output=False,
+                stream_cli_output=True,
             )
 
             if not success:
@@ -325,6 +326,7 @@ def main():
                         trace_service_starting_point=scenario["service_starting_point"],
                         wait_time_before_running_agent=scenario["wait_before_launch_agent"],
                         agent_configuration_name=agent_name,
+                        batch_name=batch_dir_name,
                         run_sre_agent_func=run_sre_agent,
                         export_json_results_func=export_json_results,
                         results_group_dir=results_group_path,

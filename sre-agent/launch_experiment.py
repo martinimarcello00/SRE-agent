@@ -81,7 +81,9 @@ async def run_sre_agent(
             "starting_service": trace_service_starting_point,
             "experiment_name": trace_name or app_name,
             "fault_name" : fault_name,
-            "agent_configuration": agent_configuration_name
+            "agent_configuration": agent_configuration_name,
+            "parallel_rca_tasks": os.environ.get("RCA_TASKS_PER_ITERATION","Unknown"),
+            "max_tool_calls": os.environ.get("MAX_TOOL_CALLS","Unknown")
         }
     }
     if trace_name:
