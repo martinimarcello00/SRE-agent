@@ -14,7 +14,6 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
-import string
 
 from dotenv import load_dotenv
 
@@ -142,6 +141,9 @@ def main():
 
     # Get the agent configurations
     agents_configurations = load_agent_configurations()
+    
+    # Sort agent configurations by their id
+    agents_configurations = sorted(agents_configurations, key=lambda x: x.get("id", ""))
 
     if not fault_scenarios:
         logger.error("No fault scenarios found. Exiting.")
@@ -155,15 +157,11 @@ def main():
     print(f"\n\nThe following experiments will be executed ({total_runs} experiments):")
     for scenario_idx, scenario in enumerate(fault_scenarios, start=1):
         for config_idx, agent in enumerate(agents_configurations, start=1):
-            config_label = (
-                string.ascii_uppercase[config_idx - 1]
-                if config_idx <= len(string.ascii_uppercase)
-                else str(config_idx)
-            )
+            agent_id = agent.get("id", "Unknown ID")
             scenario_name = scenario.get("scenario", "Unknown Scenario")
             fault_type = scenario.get("fault_type", "Unknown Fault")
             agent_conf_name = agent.get("name", "Unknown Agent Configuration")
-            print(f"{scenario_idx}{config_label}. {agent_conf_name} - {scenario_name} — {fault_type}")
+            print(f"{scenario_idx}{agent_id}. {agent_conf_name} - {scenario_name} — {fault_type}")
 
     proceed_input = input("\nProceed with these experiments? [y/N]: ").strip().lower()
     if proceed_input not in {"y", "yes"}:
@@ -264,25 +262,22 @@ def main():
 
             for config_idx, agent_conf in enumerate(agents_configurations, start=1):
                 agent_name = agent_conf.get("name", "Unknown Agent Configuration")
-                config_label = (
-                    string.ascii_uppercase[config_idx - 1]
-                    if config_idx <= len(string.ascii_uppercase)
-                    else str(config_idx)
-                )
+                agent_id = agent_conf.get("id", "Unknown ID")
+                formatted_agent_name = f"{agent_id} - {agent_name}"
                 logger.info(
                     "Running agent configuration %s (%d/%d) for scenario '%s': %s",
-                    config_label,
+                    agent_id,
                     config_idx,
                     total_configs,
                     scenario.get("scenario", "Unknown Scenario"),
                     agent_name,
                 )
 
-                experiment_label = f"{agent_name} - {scenario.get('app_name', scenario.get('scenario', 'Unknown App'))} - {scenario.get('fault_type', 'Unknown Fault')}"
+                experiment_label = f"{formatted_agent_name} - {scenario.get('app_name', scenario.get('scenario', 'Unknown App'))} - {scenario.get('fault_type', 'Unknown Fault')}"
                 if enable_notifications and telegram_notifier:
                     try:
                         telegram_notifier.send_telegram_message(
-                            f"🧪 Starting experiment '{experiment_label}' ({config_label})"
+                            f"🧪 Starting experiment '{experiment_label}' ({agent_id})"
                         )
                     except Exception as exc:  # pragma: no cover
                         logger.warning("Failed to send Telegram experiment start message: %s", exc)
@@ -325,7 +320,7 @@ def main():
                         target_namespace=scenario["target_namespace"],
                         trace_service_starting_point=scenario["service_starting_point"],
                         wait_time_before_running_agent=scenario["wait_before_launch_agent"],
-                        agent_configuration_name=agent_name,
+                        agent_configuration_name=formatted_agent_name,
                         batch_name=batch_dir_name,
                         run_sre_agent_func=run_sre_agent,
                         export_json_results_func=export_json_results,
@@ -335,7 +330,7 @@ def main():
 
                 logger.info(
                     "Completed agent configuration %s (%d/%d) for scenario '%s'",
-                    config_label,
+                    agent_id,
                     config_idx,
                     total_configs,
                     scenario.get("scenario", "Unknown Scenario"),
