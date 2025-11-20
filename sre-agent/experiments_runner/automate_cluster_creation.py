@@ -106,8 +106,8 @@ def setup_cluster_and_aiopslab(
     logger.info("Kind cluster created successfully")
     
     # Give cluster a moment to stabilize
-    logger.info("Waiting 5 seconds for cluster to stabilize...")
-    time.sleep(5)
+    logger.info("Waiting 30 seconds for cluster to stabilize...")
+    time.sleep(30)
     
     # Step 2: Start AIOpsLab CLI in background
     logger.info("Starting AIOpsLab CLI")
