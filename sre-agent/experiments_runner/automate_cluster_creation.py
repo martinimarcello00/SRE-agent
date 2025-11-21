@@ -2,10 +2,15 @@ import sys
 import time
 import logging
 import pexpect
+import subprocess
 from pathlib import Path
 
 
 logger = logging.getLogger(__name__)
+
+# Local registry configuration - matches kind official documentation
+LOCAL_REGISTRY_NAME = "kind-registry"
+LOCAL_REGISTRY_PORT = 5001
 
 
 def run_command_with_wait(command, timeout=600, encoding='utf-8', stream_output=False):
@@ -45,6 +50,125 @@ def run_command_with_wait(command, timeout=600, encoding='utf-8', stream_output=
         return -1, None
 
 
+def configure_kind_registry(
+    cluster_name="kind",
+    registry_port: int = LOCAL_REGISTRY_PORT,
+) -> bool:
+    """
+    Configure the kind cluster to use the local registry.
+    
+    Based on official kind documentation:
+    https://kind.sigs.k8s.io/docs/user/local-registry/
+    
+    This:
+    1. Creates the registry config directory on each node
+    2. Configures containerd to use the local registry
+    3. Connects the registry to the kind network
+    4. Adds a ConfigMap for registry discovery
+    
+    Args:
+        cluster_name: Name of the kind cluster (default: "kind")
+        registry_port: Port the registry is running on (default: 5001)
+        
+    Returns:
+        bool: True if configuration successful, False otherwise
+    """
+    logger.info("Configuring kind cluster '%s' to use local registry", cluster_name)
+    
+    registry_dir = f"/etc/containerd/certs.d/localhost:{registry_port}"
+    
+    # Step 0: Connect registry to kind network
+    logger.info("Connecting registry to kind network")
+    try:
+        # Connect registry container to kind network if it exists
+        cmd = f"docker network connect {cluster_name} {LOCAL_REGISTRY_NAME} 2>/dev/null || true"
+        subprocess.run(cmd, shell=True, capture_output=True)
+        logger.info("Registry connected to kind network")
+    except Exception as e:
+        logger.warning("Could not connect registry to kind network: %s", e)
+    
+    # Step 1: Add registry config to all nodes
+    logger.info("Configuring containerd on cluster nodes")
+    try:
+        # Get list of nodes
+        get_nodes_cmd = f"kind get nodes --name {cluster_name}"
+        result = subprocess.run(get_nodes_cmd, shell=True, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            logger.error("Failed to get cluster nodes: %s", result.stderr)
+            return False
+        
+        nodes = [n for n in result.stdout.strip().split('\n') if n]
+        
+        for worker in nodes:
+            logger.info("Configuring registry on worker node: %s", worker)
+            
+            # 1. Configure localhost:5001 (for explicit usage like localhost:5001/image)
+            cmd = f"docker exec {worker} mkdir -p /etc/containerd/certs.d/localhost:{registry_port}"
+            subprocess.run(cmd, shell=True, check=True)
+            
+            # Use registry container hostname which Docker DNS resolves automatically
+            hosts_config = (
+                f"[host.\\\"http://{LOCAL_REGISTRY_NAME}:5000\\\"]\n"
+            )
+            
+            cmd = (
+                f"docker exec {worker} "
+                f"bash -c \"cat > /etc/containerd/certs.d/localhost:{registry_port}/hosts.toml << 'EOF'\n"
+                f"{hosts_config}"
+                f"EOF\""
+            )
+            subprocess.run(cmd, shell=True, check=True)
+
+            # 2. Configure docker.io mirror (for transparent caching of standard images)
+            cmd = f"docker exec {worker} mkdir -p /etc/containerd/certs.d/docker.io"
+            subprocess.run(cmd, shell=True, check=True)
+
+            mirror_config = (
+                f"server = \\\"https://registry-1.docker.io\\\"\n"
+                f"\n"
+                f"[host.\\\"http://{LOCAL_REGISTRY_NAME}:5000\\\"]\n"
+                f"  capabilities = [\\\"pull\\\", \\\"resolve\\\"]\n"
+            )
+
+            cmd = (
+                f"docker exec {worker} "
+                f"bash -c \"cat > /etc/containerd/certs.d/docker.io/hosts.toml << 'EOF'\n"
+                f"{mirror_config}"
+                f"EOF\""
+            )
+            subprocess.run(cmd, shell=True, check=True)
+            
+            logger.info("Worker node %s configured with registry mirror", worker)
+        
+    except subprocess.CalledProcessError as e:
+        logger.warning("Issue configuring worker nodes: %s", e)
+    
+    # Step 2: Document the local registry
+    logger.info("Documenting local registry in ConfigMap")
+    try:
+        config_map_yaml = (
+            "apiVersion: v1\n"
+            "kind: ConfigMap\n"
+            "metadata:\n"
+            "  name: local-registry-hosting\n"
+            "  namespace: kube-public\n"
+            "data:\n"
+            "  localRegistryHosting.v1: |\n"
+            f"    host: \"localhost:{registry_port}\"\n"
+            "    help: \"https://kind.sigs.k8s.io/docs/user/local-registry/\"\n"
+        )
+        
+        cmd = f"echo '{config_map_yaml}' | kubectl apply -f -"
+        subprocess.run(cmd, shell=True, check=True, capture_output=True)
+        logger.info("Local registry documented in kube-public/local-registry-hosting ConfigMap")
+    except subprocess.CalledProcessError as e:
+        logger.warning("Failed to create local registry ConfigMap: %s", e)
+
+    logger.info("Registry configuration complete - local registry enabled with fallback to default registries")
+    return True
+
+
 def setup_cluster_and_aiopslab(
     problem_id,
     kind_config_path=None,
@@ -53,6 +177,7 @@ def setup_cluster_and_aiopslab(
     setup_timeout=300,
     stream_cluster_output=False,
     stream_cli_output=False,
+    enable_local_registry=True,
 ):
     """
     Set up the experiment environment: create kind cluster and initialize AIOpsLab.
@@ -64,8 +189,9 @@ def setup_cluster_and_aiopslab(
                       If None, uses the directory of this script
         cluster_timeout: Timeout for cluster creation in seconds
         setup_timeout: Timeout for problem setup in seconds
-    stream_cluster_output: If True, stream kind cluster command output to stdout
-    stream_cli_output: If True, stream AIOpsLab CLI output to stdout
+        stream_cluster_output: If True, stream kind cluster command output to stdout
+        stream_cli_output: If True, stream AIOpsLab CLI output to stdout
+        enable_local_registry: If True, configure the cluster to use the local registry
         
     Returns:
         bool: True if setup successful, False otherwise
@@ -81,7 +207,7 @@ def setup_cluster_and_aiopslab(
     logger.info("AIOpsLab directory: %s", aiopslab_dir)
     
     # Step 1: Create kind cluster
-    logger.info("Creating kind cluster")
+    logger.info("=== STEP 1: Create kind cluster ===")
     
     if kind_config_path is None:
         kind_config_path = aiopslab_dir / "kind" / "kind-config-x86.yaml"
@@ -109,8 +235,14 @@ def setup_cluster_and_aiopslab(
     logger.info("Waiting 30 seconds for cluster to stabilize...")
     time.sleep(30)
     
-    # Step 2: Start AIOpsLab CLI in background
-    logger.info("Starting AIOpsLab CLI")
+    # Step 2: Optional - Configure registry with cluster
+    if enable_local_registry:
+        logger.info("=== STEP 2: Configure local registry ===")
+        if not configure_kind_registry("kind", LOCAL_REGISTRY_PORT):
+            logger.warning("Failed to configure registry; continuing without it")
+    
+    # Step 3: Start AIOpsLab CLI in background
+    logger.info("=== STEP 3: Start AIOpsLab CLI ===")
 
     # Change to AIOpsLab directory and run poetry from there
     command = f"cd {aiopslab_dir} && poetry run python cli.py"
