@@ -11,9 +11,27 @@ Your analysis must adhere to the following rules:
 5.  **Trace-Only Evidence**: If error traces are the only signals, still produce symptoms by identifying the service (or pod) that owns the failing span and summarizing the suspected issue using the trace error message. Avoid generic "trace failed" statements—make the hypothesis explicit (e.g., "checkout-service may have invalid credentials because trace X shows `401 Unauthorized` calling payment-service").
 6.  **Empty State**: If the provided data contains no issues, it is correct to return an empty list of symptoms."""
 
+TRIAGE_HUMAN_PROMPT = """Please analyze the following triage data for the {app_name} application.
+
+### Application Summary
+{app_summary}
+
+### Problematic Pods
+{problematic_pods}
+
+### Anomalous Pod Metrics
+{problematic_metrics}
+
+### Slow Traces
+{slow_traces}
+
+### Error Traces
+{problematic_traces}
+"""
+
 triage_prompt_template = ChatPromptTemplate.from_messages(
     [
         ("system", TRIAGE_SYSTEM_PROMPT),
-        ("human", "{human_input}"),
+        ("human", TRIAGE_HUMAN_PROMPT),
     ]
 )

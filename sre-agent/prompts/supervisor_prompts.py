@@ -1,6 +1,4 @@
 """Prompt templates for Supervisor Agent."""
-from langchain_core.prompts import ChatPromptTemplate
-
 SUPERVISOR_SYSTEM_PROMPT = """You are an expert Site Reliability Engineer analyzing RCA findings to determine the root cause of an incident.
 
 Analyze all symptoms and investigation findings to:
@@ -37,9 +35,30 @@ When you need more evidence, ask for the most targeted pending tasks that can cl
 
 Provide a clear, specific root cause statement that explains what caused the incident and why it happened now."""
 
-supervisor_prompt_template = ChatPromptTemplate.from_messages(
-    [
-        ("system", SUPERVISOR_SYSTEM_PROMPT),
-        ("human", "{human_input}"),
-    ]
-)
+SUPERVISOR_HUMAN_PROMPT = """
+# Incident Analysis Summary
+
+- **Application**: {app_name}
+- **Summary**: {app_summary}
+
+---
+
+# Symptoms Identified
+
+{symptoms_info}
+
+---
+
+# RCA Investigation Findings
+
+{rca_findings_info}
+
+---
+
+# Pending RCA Tasks
+These are the tasks planned but NOT yet completed:
+
+{pending_tasks_info}
+
+Based on all the above information, provide a comprehensive root cause diagnosis.
+"""

@@ -1,9 +1,9 @@
 """Supervisor Agent - Synthesizes RCA findings into final diagnosis."""
 import json
 from langgraph.graph import START, END, StateGraph
-
+from langchain_core.prompts import ChatPromptTemplate
 from models import SupervisorAgentState, SupervisorDecision, FinalReport
-from prompts import supervisor_prompt_template
+from prompts import SUPERVISOR_SYSTEM_PROMPT, SUPERVISOR_HUMAN_PROMPT
 from config import GPT5_MINI
 import logging
 
@@ -39,58 +39,63 @@ def supervisor_agent(state: SupervisorAgentState) -> dict:
         }
     
     # Build human prompt with all investigation data in markdown format
-    human_parts = [
-        "# Incident Analysis Summary\n\n",
-        f"- **Application**: {app_name}\n",
-        f"- **Summary**: {app_summary}\n\n",
-        "---\n\n"
-    ]
-    
-    # Add symptoms
+    symptoms_info = ""
     if symptoms:
-        human_parts.append("# Symptoms Identified\n\n")
+        symptoms_parts = []
         for i, symptom in enumerate(symptoms, 1):
-            human_parts.extend([
+            symptoms_parts.extend([
                 f"## Symptom {i}\n\n",
                 f"**Type**: {symptom.potential_symptom}\n\n",
                 f"**Resource**: `{symptom.affected_resource}` ({symptom.resource_type})\n\n",
                 f"**Evidence**: {symptom.evidence}\n\n"
             ])
-        human_parts.append("---\n\n")
+        symptoms_info = "".join(symptoms_parts)
     
     # Add RCA analysis findings
+    rca_findings_info = ""
     if rca_analyses:
-        human_parts.append("# RCA Investigation Findings\n\n")
+        rca_parts = []
         for analysis in rca_analyses:
             # Create a copy excluding message_history for the prompt
             analysis_for_prompt = {k: v for k, v in analysis.items() if k != 'message_history'}
-            human_parts.extend([
-                f"## Investigation (priority #{analysis["task"]["priority"]})\n\n",
+            rca_parts.extend([
+                f"## Investigation (priority #{analysis['task']['priority']})\n\n",
                 f"```json\n{json.dumps(analysis_for_prompt, indent=2)}\n```\n\n"
             ])
-        human_parts.append("---\n\n")
+        rca_findings_info = "".join(rca_parts)
     
     # Add pending RCA tasks
+    pending_tasks_info = ""
     if rca_tasks:
-        human_parts.append("# Pending RCA Tasks\nThese are the tasks planned but NOT yet completed:\n\n")
         pending_tasks = [task for task in rca_tasks if task.status in ("pending", "in_progress")]
         if not pending_tasks:
-            human_parts.append("All planned RCA tasks have been completed.\n")
+            pending_tasks_info = "All planned RCA tasks have been completed.\n"
         else:
+            pending_parts = []
             for task in pending_tasks:
-                human_parts.extend([
+                pending_parts.extend([
                     f"- **Priority #{task.priority}**: {task.investigation_goal}",
                     f"  - **Target**: {task.resource_type} `{task.target_resource}`",
                     f"  - **Suggested Tools**: {', '.join(task.suggested_tools)}\n"
                 ])
+            pending_tasks_info = "\n".join(pending_parts)
     
-    human_input = "".join(human_parts)
-    human_input += "\n\nBased on all the above information, provide a comprehensive root cause diagnosis."
-
+    supervisor_prompt_template = ChatPromptTemplate.from_messages(
+    [
+        ("system", SUPERVISOR_SYSTEM_PROMPT),
+        ("human", SUPERVISOR_HUMAN_PROMPT),
+    ]
+    )
     # Create and invoke chain
     llm_with_decision = GPT5_MINI.with_structured_output(SupervisorDecision)
     supervisor_chain = supervisor_prompt_template | llm_with_decision
-    decision = supervisor_chain.invoke({"human_input": human_input})
+    decision = supervisor_chain.invoke({
+        "app_name": app_name,
+        "app_summary": app_summary,
+        "symptoms_info": symptoms_info,
+        "rca_findings_info": rca_findings_info,
+        "pending_tasks_info": pending_tasks_info
+    })
 
     # Evaluate the decision
     if decision.final_report: # type: ignore

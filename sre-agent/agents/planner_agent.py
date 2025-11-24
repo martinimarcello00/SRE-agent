@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from langgraph.graph import START, END, StateGraph
 import logging
+from langchain_core.prompts import ChatPromptTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ from api.k8s_api import K8sAPI
 from api.datagraph import DataGraph
 
 from models import PlannerAgentState, RCATaskList, Symptom
-from prompts import planner_prompt_template
+from prompts import PLANNER_SYSTEM_PROMPT, PLANNER_HUMAN_PROMPT
 from config import GPT5_MINI
 
 
@@ -101,20 +102,13 @@ def planner_agent(state: PlannerAgentState) -> dict:
         enriched_symptoms.append(enriched)
     
     # Build human prompt with all symptom information in markdown format
-    human_parts = [
-        "# Application Context\n\n",
-        f"- **Application**: {state['app_name']}\n",
-        f"- **Namespace**: `{state['target_namespace']}`\n",
-        f"- **Summary**: {state['app_summary']}\n\n",
-        "---\n\n",
-        "# Symptoms to Investigate\n\n"
-    ]
+    symptoms_info_parts = []
     
     for i, enriched in enumerate(enriched_symptoms, 1):
         symptom_dict = enriched["symptom"]
         deps = enriched["dependencies"]
         
-        human_parts.extend([
+        symptoms_info_parts.extend([
             f"## Symptom {i}\n\n",
             f"**Type**: {symptom_dict['potential_symptom']}\n\n",
             f"**Resource**: `{symptom_dict['affected_resource']}` (`{symptom_dict['resource_type']}`)\n\n",
@@ -123,30 +117,43 @@ def planner_agent(state: PlannerAgentState) -> dict:
         
         # Add dependencies if they exist
         if "data_dependencies" in deps and deps["data_dependencies"]:
-            human_parts.append(f"**Data Dependencies**:\n```json\n{json.dumps(deps['data_dependencies'], indent=2)}\n```\n\n")
+            symptoms_info_parts.append(f"**Data Dependencies**:\n```json\n{json.dumps(deps['data_dependencies'], indent=2)}\n```\n\n")
         else:
-            human_parts.append(f"**Data Dependencies**:\nNo data dependencies found for the affected resource\n\n")
+            symptoms_info_parts.append(f"**Data Dependencies**:\nNo data dependencies found for the affected resource\n\n")
         
         if "infra_dependencies" in deps and deps["infra_dependencies"]:
-            human_parts.append(f"**Infrastructure Dependencies**:\n```json\n{json.dumps(deps['infra_dependencies'], indent=2)}\n```\n\n")
+            symptoms_info_parts.append(f"**Infrastructure Dependencies**:\n```json\n{json.dumps(deps['infra_dependencies'], indent=2)}\n```\n\n")
         else:
-            human_parts.append(f"**Infrastructure Dependencies**:\nNo infrastructure dependencies found for the affected resource\n\n")
+            symptoms_info_parts.append(f"**Infrastructure Dependencies**:\nNo infrastructure dependencies found for the affected resource\n\n")
 
         if "data_dependencies" not in deps and "infra_dependencies" not in deps:
-            human_parts.append("**Dependencies**: None found\n\n")
+            symptoms_info_parts.append("**Dependencies**: None found\n\n")
 
         
-        human_parts.append("---\n\n")
+        symptoms_info_parts.append("---\n\n")
     
-    human_input = "".join(human_parts)
+    symptoms_info = "".join(symptoms_info_parts)
     
     # Create and invoke chain
     llm_for_tasks = GPT5_MINI.with_structured_output(RCATaskList)
 
     logger.info("Planner Agent: Finding investigation plan (RCA task list)")
 
+    planner_prompt_template = ChatPromptTemplate.from_messages(
+    [
+        ("system", PLANNER_SYSTEM_PROMPT),
+        ("human", PLANNER_HUMAN_PROMPT),
+    ]
+    )
+
     planner_chain = planner_prompt_template | llm_for_tasks
-    task_list = planner_chain.invoke({"human_input": human_input})
+    
+    task_list = planner_chain.invoke({
+        "app_name": state["app_name"],
+        "target_namespace": state["target_namespace"],
+        "app_summary": state["app_summary"],
+        "symptoms_info": symptoms_info
+    })
 
     # order the task_list.rca_tasks by priority number (ascending)
     tasks_list = sorted(task_list.rca_tasks, key=lambda t: t.priority)  # type: ignore

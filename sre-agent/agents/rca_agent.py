@@ -1,10 +1,10 @@
 """RCA Agent Worker - Performs focused root cause analysis investigations."""
 from langgraph.graph import START, END, StateGraph
 from langgraph.prebuilt import tools_condition, ToolNode
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 
 from models import RcaAgentState, RCAAgentExplaination
-from prompts import RCA_AGENT_PROMPT, EXPLAIN_ANALYSIS_PROMPT
+from prompts import RCA_SYSTEM_PROMPT, RCA_HUMAN_PROMPT, EXPLAIN_ANALYSIS_PROMPT
 from tools import TOOLS, submit_final_diagnosis
 from utils import count_tool_calls, count_non_submission_tool_calls
 from config import GPT5_MINI, settings as config_settings
@@ -39,7 +39,8 @@ Do NOT make any more tool calls. Submit your diagnosis immediately.
 ⚠️ **BUDGET WARNING**: You have made {tool_call_count}/{max_tool_calls} tool calls. You should prepare to submit your diagnosis soon.
 """
 
-    prompt = SystemMessage(content=RCA_AGENT_PROMPT.format(
+    system_message = SystemMessage(content=RCA_SYSTEM_PROMPT)
+    human_message = HumanMessage(content=RCA_HUMAN_PROMPT.format(
         app_summary=state["rca_app_summary"],
         target_namespace=state["rca_target_namespace"],
         investigation_goal=task.investigation_goal,
@@ -52,7 +53,7 @@ Do NOT make any more tool calls. Submit your diagnosis immediately.
     ))
 
     llm_with_completion_tools = GPT5_MINI.bind_tools(tools_with_completion, parallel_tool_calls=True)
-    return {"messages": [llm_with_completion_tools.invoke([prompt] + state["messages"])]}
+    return {"messages": [llm_with_completion_tools.invoke([system_message, human_message] + state["messages"])]}
 
 
 async def explain_analysis(state: RcaAgentState) -> dict:

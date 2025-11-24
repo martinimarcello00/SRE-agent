@@ -1,5 +1,4 @@
 """Prompt templates for Planner Agent."""
-from langchain_core.prompts import ChatPromptTemplate
 
 PLANNER_SYSTEM_PROMPT = """
 You are an expert Site Reliability Engineer. Produce a concise, de-duplicated investigation plan where each task inspects a precise part of the infrastructure to surface the most likely root-cause signals and converge on the true RCA quickly.
@@ -31,9 +30,16 @@ You are an expert Site Reliability Engineer. Produce a concise, de-duplicated in
 - Remaining priorities should rank other high-impact hypotheses (shared dependencies, severe crashes) ahead of narrow or low-scope checks.
 """
 
-planner_prompt_template = ChatPromptTemplate.from_messages(
-    [
-        ("system", PLANNER_SYSTEM_PROMPT),
-        ("human", "{human_input}"),
-    ]
-)
+PLANNER_HUMAN_PROMPT = """
+# Application Context
+
+- **Application**: {app_name}
+- **Namespace**: `{target_namespace}`
+- **Summary**: {app_summary}
+
+---
+
+# Symptoms to Investigate
+
+{symptoms_info}
+"""

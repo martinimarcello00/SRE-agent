@@ -84,39 +84,32 @@ def triage_agent(state: TriageAgentState) -> dict:
     Returns:
         Dictionary with identified symptoms
     """
-    human_prompt_parts = [
-        f"Please analyze the following triage data for the {state['app_name']} application.\n\n"
-        f"### Application Summary\n{state['app_summary']}"
-    ]
+    # Helper to format data or return info message
+    def format_data(data, label):
+        if "info" in data:
+            return data["info"]
+        if "error" in data:
+            return f"Error retrieving {label}: {data['error']}"
+        return f"```json\n{json.dumps(data, indent=2)}\n```"
 
-    if "info" not in state["problematic_pods"]:
-        problematic_pods_str = json.dumps(state["problematic_pods"], indent=2)
-        human_prompt_parts.append(f"### Problematic Pods\n```json\n{problematic_pods_str}\n```")
-
-    if "info" not in state["problematic_metrics"]:
-        problematic_metrics_str = json.dumps(state["problematic_metrics"], indent=2)
-        human_prompt_parts.append(f"### Anomalous Pod Metrics\n```json\n{problematic_metrics_str}\n```")
-
-    if "info" not in state["slow_traces"] and "error" not in state["slow_traces"]:
-        slow_traces_str = json.dumps(state["slow_traces"], indent=2)
-        human_prompt_parts.append(f"### Slow Traces\n```json\n{slow_traces_str}\n```")
-
-    if "info" not in state["problematic_traces"] and "error" not in state["problematic_traces"] and len(human_prompt_parts) == 1:
-        problematic_traces_str = json.dumps(state["problematic_traces"], indent=2)
-        human_prompt_parts.append(f"### Traces that contains error\n```json\n{problematic_traces_str}\n```")
-
-    # If no problems were found in any dataset, add a note.
-    if len(human_prompt_parts) == 1:
-        human_prompt_parts.append("No issues were found in pods, metrics, or traces.")
-
-    human_input = "\n\n".join(human_prompt_parts)
+    problematic_pods_str = format_data(state["problematic_pods"], "pods")
+    problematic_metrics_str = format_data(state["problematic_metrics"], "metrics")
+    slow_traces_str = format_data(state["slow_traces"], "slow traces")
+    problematic_traces_str = format_data(state["problematic_traces"], "error traces")
 
     llm_for_symptoms = GPT5_MINI.with_structured_output(SymptomList)
     triage_chain = triage_prompt_template | llm_for_symptoms
 
     logger.info("Triage agent is analyzing triage data to identify symptoms.")
 
-    symptom_list = triage_chain.invoke({"human_input": human_input})
+    symptom_list = triage_chain.invoke({
+        "app_name": state["app_name"],
+        "app_summary": state["app_summary"],
+        "problematic_pods": problematic_pods_str,
+        "problematic_metrics": problematic_metrics_str,
+        "slow_traces": slow_traces_str,
+        "problematic_traces": problematic_traces_str
+    })
 
     return {"symptoms": symptom_list.symptoms}  # type: ignore
 
