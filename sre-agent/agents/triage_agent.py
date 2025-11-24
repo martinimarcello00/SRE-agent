@@ -97,7 +97,22 @@ def triage_agent(state: TriageAgentState) -> dict:
     problematic_pods_str = format_data(state["problematic_pods"], "pods")
     problematic_metrics_str = format_data(state["problematic_metrics"], "metrics")
     slow_traces_str = format_data(state["slow_traces"], "slow traces")
-    problematic_traces_str = format_data(state["problematic_traces"], "error traces")
+    
+    # Check if we have any primary problems (pods, metrics, slow traces)
+    has_problems = (
+        "info" not in state["problematic_pods"] and "error" not in state["problematic_pods"]
+    ) or (
+        "info" not in state["problematic_metrics"] and "error" not in state["problematic_metrics"]
+    ) or (
+        "info" not in state["slow_traces"] and "error" not in state["slow_traces"]
+    )
+    
+    # Only include error traces if no other problems found (fallback)
+    if has_problems:
+        problematic_traces_str = "No error traces analyzed (other problems detected)."
+    else:
+        logger.warning("No primary problems detected (pods, metrics, slow traces); falling back to analyzing error traces.")
+        problematic_traces_str = format_data(state["problematic_traces"], "error traces")
 
     # Determine which system prompt to use
     triage_system_prompt = get_system_prompt(state, "triage_agent", TRIAGE_SYSTEM_PROMPT) #type: ignore
