@@ -36,7 +36,8 @@ async def run_sre_agent(
     trace_service_starting_point: str,
     trace_name: Optional[str] = None,
     agent_configuration_name: Optional[str] = None,
-    agent_id: Optional[str] = None
+    agent_id: Optional[str] = None,
+    prompts_config: Optional[dict[str, str]] = None
 ) -> tuple[dict, float]:
     """Execute the complete SRE agent workflow.
     
@@ -53,6 +54,9 @@ async def run_sre_agent(
     
     from graph import SreParentState
 
+    if not prompts_config:
+        prompts_config = {}
+
     initial_state = SreParentState(
         app_name=app_name,
         app_summary=app_summary,
@@ -66,7 +70,8 @@ async def run_sre_agent(
         symptoms=[],
         rca_tasks=[],
         rca_analyses_list=[],
-        final_report={}
+        final_report={},
+        prompts_config=prompts_config
     )
 
     if not agent_configuration_name:
@@ -259,7 +264,8 @@ async def main():
         trace_service_starting_point=service_starting_point,
         trace_name=experiment_name,
         agent_configuration_name="Plain ReAct",
-        agent_id=agent_id
+        agent_id=agent_id,
+
     )
 
     # Display results

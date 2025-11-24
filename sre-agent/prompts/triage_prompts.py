@@ -1,6 +1,4 @@
 """Prompt templates for Triage Agent."""
-from langchain_core.prompts import ChatPromptTemplate
-
 TRIAGE_SYSTEM_PROMPT = """You are an expert Site Reliability Engineer. Your mission is to triage a Kubernetes application by analyzing the provided data.
 
 Your analysis must adhere to the following rules:
@@ -28,10 +26,3 @@ TRIAGE_HUMAN_PROMPT = """Please analyze the following triage data for the {app_n
 ### Error Traces
 {problematic_traces}
 """
-
-triage_prompt_template = ChatPromptTemplate.from_messages(
-    [
-        ("system", TRIAGE_SYSTEM_PROMPT),
-        ("human", TRIAGE_HUMAN_PROMPT),
-    ]
-)

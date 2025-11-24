@@ -1,10 +1,11 @@
 """Triage Agent - Gathers cluster health data and identifies symptoms."""
 import json
 import sys
-import os
 from pathlib import Path
 from langgraph.graph import START, END, StateGraph
 import logging
+from langchain_core.prompts import ChatPromptTemplate
+
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +19,9 @@ from api.k8s_api import K8sAPI
 from api.prometheus_api import PrometheusAPI
 
 from models import TriageAgentState, SymptomList
-from prompts import triage_prompt_template
+from prompts import TRIAGE_SYSTEM_PROMPT, TRIAGE_HUMAN_PROMPT
 from config import GPT5_MINI
+from utils import get_system_prompt
 
 
 def get_triage_data(state: TriageAgentState) -> dict:
@@ -96,6 +98,16 @@ def triage_agent(state: TriageAgentState) -> dict:
     problematic_metrics_str = format_data(state["problematic_metrics"], "metrics")
     slow_traces_str = format_data(state["slow_traces"], "slow traces")
     problematic_traces_str = format_data(state["problematic_traces"], "error traces")
+
+    # Determine which system prompt to use
+    triage_system_prompt = get_system_prompt(state, "triage_agent", TRIAGE_SYSTEM_PROMPT) #type: ignore
+
+    triage_prompt_template = ChatPromptTemplate.from_messages(
+        [
+            ("system", triage_system_prompt),
+            ("human", TRIAGE_HUMAN_PROMPT),
+        ]
+    )
 
     llm_for_symptoms = GPT5_MINI.with_structured_output(SymptomList)
     triage_chain = triage_prompt_template | llm_for_symptoms

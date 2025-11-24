@@ -1,12 +1,12 @@
 """Prompts module exports."""
-from .triage_prompts import triage_prompt_template, TRIAGE_SYSTEM_PROMPT
+from .triage_prompts import TRIAGE_SYSTEM_PROMPT, TRIAGE_HUMAN_PROMPT
 from .planner_prompts import PLANNER_SYSTEM_PROMPT, PLANNER_HUMAN_PROMPT
 from .rca_prompts import RCA_SYSTEM_PROMPT, RCA_HUMAN_PROMPT, EXPLAIN_ANALYSIS_PROMPT
 from .supervisor_prompts import SUPERVISOR_SYSTEM_PROMPT, SUPERVISOR_HUMAN_PROMPT
 
 __all__ = [
-    'triage_prompt_template',
     'TRIAGE_SYSTEM_PROMPT',
+    'TRIAGE_HUMAN_PROMPT',
     'PLANNER_SYSTEM_PROMPT',
     'PLANNER_HUMAN_PROMPT',
     'RCA_SYSTEM_PROMPT',

@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 from models import RcaAgentState, RCAAgentExplaination
 from prompts import RCA_SYSTEM_PROMPT, RCA_HUMAN_PROMPT, EXPLAIN_ANALYSIS_PROMPT
 from tools import TOOLS, submit_final_diagnosis
-from utils import count_tool_calls, count_non_submission_tool_calls
+from utils import count_tool_calls, count_non_submission_tool_calls, get_system_prompt
 from config import GPT5_MINI, settings as config_settings
 
 
@@ -39,7 +39,9 @@ Do NOT make any more tool calls. Submit your diagnosis immediately.
 ⚠️ **BUDGET WARNING**: You have made {tool_call_count}/{max_tool_calls} tool calls. You should prepare to submit your diagnosis soon.
 """
 
-    system_message = SystemMessage(content=RCA_SYSTEM_PROMPT)
+    rca_system_prompt = get_system_prompt(state, "rca_agent", RCA_SYSTEM_PROMPT, state_key="rca_prompts_config") #type: ignore
+
+    system_message = SystemMessage(content=rca_system_prompt)
     human_message = HumanMessage(content=RCA_HUMAN_PROMPT.format(
         app_summary=state["rca_app_summary"],
         target_namespace=state["rca_target_namespace"],

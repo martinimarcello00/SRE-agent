@@ -71,7 +71,7 @@ async def run_experiment(
     export_json_results_func,
     batch_name: str,
     results_group_dir: Optional[Path] = None,
-    trace_name: Optional[str] = None
+    prompts_config: Optional[dict[str,str]] = None
 ) -> tuple[dict, Path]:
     
     logger.info(
@@ -91,7 +91,8 @@ async def run_experiment(
         trace_service_starting_point=trace_service_starting_point,
         trace_name=experiment_name,
         agent_configuration_name=agent_configuration_name,
-        agent_id=agent_id
+        agent_id=agent_id,
+        prompts_config=prompts_config
     )
 
     logger.info("Waiting 15 seconds to allow LangSmith to import final experiment data before saving results...")
@@ -266,6 +267,7 @@ def main():
             for config_idx, agent_conf in enumerate(agents_configurations, start=1):
                 agent_name = agent_conf.get("name", "Unknown Agent Configuration")
                 agent_id = agent_conf.get("id", "Unknown ID")
+                prompts_config = agent_conf.get("prompts_config", {})
                 formatted_agent_name = f"{agent_id} - {agent_name}"
                 logger.info(
                     "Running agent configuration %s (%d/%d) for scenario '%s': %s",
@@ -329,6 +331,7 @@ def main():
                         run_sre_agent_func=run_sre_agent,
                         export_json_results_func=export_json_results,
                         results_group_dir=results_group_path,
+                        prompts_config=prompts_config
                     )
                 )
 

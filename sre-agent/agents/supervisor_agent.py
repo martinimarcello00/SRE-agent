@@ -4,6 +4,7 @@ from langgraph.graph import START, END, StateGraph
 from langchain_core.prompts import ChatPromptTemplate
 from models import SupervisorAgentState, SupervisorDecision, FinalReport
 from prompts import SUPERVISOR_SYSTEM_PROMPT, SUPERVISOR_HUMAN_PROMPT
+from utils import get_system_prompt
 from config import GPT5_MINI
 import logging
 
@@ -80,11 +81,13 @@ def supervisor_agent(state: SupervisorAgentState) -> dict:
                 ])
             pending_tasks_info = "\n".join(pending_parts)
     
+    supervisor_system_prompt = get_system_prompt(state, "supervisor_agent", SUPERVISOR_SYSTEM_PROMPT) #type: ignore
+    
     supervisor_prompt_template = ChatPromptTemplate.from_messages(
-    [
-        ("system", SUPERVISOR_SYSTEM_PROMPT),
-        ("human", SUPERVISOR_HUMAN_PROMPT),
-    ]
+        [
+            ("system", supervisor_system_prompt),
+            ("human", SUPERVISOR_HUMAN_PROMPT),
+        ]
     )
     # Create and invoke chain
     llm_with_decision = GPT5_MINI.with_structured_output(SupervisorDecision)

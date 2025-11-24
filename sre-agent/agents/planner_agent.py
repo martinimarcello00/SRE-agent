@@ -20,6 +20,7 @@ from api.datagraph import DataGraph
 from models import PlannerAgentState, RCATaskList, Symptom
 from prompts import PLANNER_SYSTEM_PROMPT, PLANNER_HUMAN_PROMPT
 from config import GPT5_MINI
+from utils import get_system_prompt
 
 
 def get_resource_dependencies(symptom: Symptom) -> dict:
@@ -139,9 +140,11 @@ def planner_agent(state: PlannerAgentState) -> dict:
 
     logger.info("Planner Agent: Finding investigation plan (RCA task list)")
 
+    planner_system_prompt = get_system_prompt(state, "planner_agent", PLANNER_SYSTEM_PROMPT) #type: ignore
+
     planner_prompt_template = ChatPromptTemplate.from_messages(
     [
-        ("system", PLANNER_SYSTEM_PROMPT),
+        ("system", planner_system_prompt),
         ("human", PLANNER_HUMAN_PROMPT),
     ]
     )

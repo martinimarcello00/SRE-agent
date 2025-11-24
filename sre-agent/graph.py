@@ -125,7 +125,8 @@ def rca_router(state: SreParentState) -> list[Send]:
             "app_summary": state.get("app_summary"),
             "symptoms": state.get("symptoms", []),
             "rca_tasks": [],
-            "rca_analyses_list": []
+            "rca_analyses_list": [],
+            "prompts_config": state.get("prompts_config", {})
         }
         return [Send("supervisor_agent", supervisor_input)]
 
@@ -152,7 +153,8 @@ def rca_router(state: SreParentState) -> list[Send]:
             "app_summary": state.get("app_summary"),
             "symptoms": state.get("symptoms", []),
             "rca_tasks": rca_tasks, # <-- Pass all tasks
-            "rca_analyses_list": state.get("rca_analyses_list", []) # Pass existing analyses
+            "rca_analyses_list": state.get("rca_analyses_list", []), # Pass existing analyses
+            "prompts_config": state.get("prompts_config", {})
         }
         return [Send("supervisor_agent", supervisor_input)]
     
@@ -169,7 +171,8 @@ def rca_router(state: SreParentState) -> list[Send]:
                 "app_summary": state.get("app_summary"),
                 "symptoms": state.get("symptoms", []),
                 "rca_tasks": rca_tasks,
-                "rca_analyses_list": state.get("rca_analyses_list", [])
+                "rca_analyses_list": state.get("rca_analyses_list", []),
+                "prompts_config": state.get("prompts_config", {})
             }
             return [Send("supervisor_agent", supervisor_input)]
 
@@ -185,7 +188,8 @@ def rca_router(state: SreParentState) -> list[Send]:
             "messages": [],
             "insights": [],
             "prev_steps": [],
-            "rca_analyses_list": []
+            "rca_analyses_list": [],
+            "rca_prompts_config": state.get("prompts_config", {})
         }
         parallel_rca_calls.append(Send("rca_agent", rca_input_state))
 

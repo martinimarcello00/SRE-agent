@@ -1,6 +1,11 @@
 """Utility helper functions for SRE Agent."""
 from langchain_core.messages import AIMessage
 from collections import Counter
+from typing import Optional
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_insights_str(state) -> str:
@@ -75,3 +80,29 @@ def count_non_submission_tool_calls(messages) -> int:
                         if tool_name != "submit_final_diagnosis":
                             tool_call_count += 1
     return tool_call_count
+
+
+def get_system_prompt(state: dict, agent_name: str, default_prompt: str, state_key: Optional[str] = "prompts_config") -> str:
+    """Determine which system prompt to use (default or custom from config).
+    
+    Args:
+        state: Agent state containing potential 'prompts_config'
+        agent_name: Key name for the agent in the config (e.g., 'triage_agent')
+        default_prompt: The default system prompt string to use if no override exists
+        state_key (Optional[str], optional): The key in `state` where prompt configurations are stored. Defaults to "prompts_config".
+        
+    Returns:
+        The selected system prompt string
+    """
+    system_prompt = default_prompt
+    prompt_configs = state.get(state_key, {})
+    
+    if isinstance(prompt_configs, dict):
+        custom_prompt = prompt_configs.get(agent_name)
+        if custom_prompt:
+            system_prompt = custom_prompt
+            logger.info(f"Using custom system prompt for {agent_name}.")
+        else:
+            logger.info(f"No custom system prompt found for {agent_name}; using default.")
+    
+    return system_prompt

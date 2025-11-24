@@ -1,5 +1,5 @@
 """TypedDict state definitions for LangGraph agents."""
-from typing import TypedDict, List, Annotated
+from typing import TypedDict, List, Annotated, Dict
 import operator
 from langgraph.graph.message import add_messages, AnyMessage
 from .schemas import Symptom, RCATask
@@ -16,6 +16,7 @@ class TriageAgentState(TypedDict):
     problematic_metrics: dict
     problematic_traces: dict
     symptoms: List[Symptom]
+    prompts_config: Dict[str, str]
 
 
 class PlannerAgentState(TypedDict):
@@ -25,6 +26,7 @@ class PlannerAgentState(TypedDict):
     target_namespace: str
     symptoms: List[Symptom]
     rca_tasks: List[RCATask]
+    prompts_config: Dict[str, str]
 
 
 class RcaAgentState(TypedDict):
@@ -37,7 +39,8 @@ class RcaAgentState(TypedDict):
     prev_steps: list[str]
     rca_output: dict
     rca_analyses_list: list[dict]
-
+    rca_prompts_config: Dict[str, str]
+    
 
 class SupervisorAgentState(TypedDict):
     """State for the Supervisor Agent"""
@@ -48,6 +51,7 @@ class SupervisorAgentState(TypedDict):
     final_report: dict
     rca_tasks: List[RCATask]
     tasks_to_be_executed: List[int]
+    prompts_config: Dict[str, str]
 
 
 class SreParentState(TypedDict):
@@ -75,3 +79,6 @@ class SreParentState(TypedDict):
 
     # Supervisor agent
     final_report: dict
+
+    # Prompt configuration
+    prompts_config: Dict[str, str]
