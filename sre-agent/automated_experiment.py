@@ -1,10 +1,10 @@
-
 from experiments_runner import (
     setup_cluster_and_aiopslab,
     cleanup_cluster,
     load_fault_scenarios,
-    load_agent_configurations
+    load_agent_configurations,
 )
+
 import asyncio
 import datetime
 import json
@@ -18,7 +18,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from utils import TelegramNotification, get_today_completions_usage
-from config import apply_config_overrides
+from config import apply_config_overrides, MAX_DAILY_OPENAI_TOKEN_LIMIT
 
 # Configure logging for the SRE Agent script
 logging.basicConfig(
@@ -228,8 +228,8 @@ def main():
             pre_run_usage["output_tokens"],
             pre_run_usage["total_tokens"],
         )
-        if pre_run_usage["total_tokens"] >= 2_000_000:
-            logger.error("Token usage exceeded limit (2,000,000). Aborting experiment.")
+        if pre_run_usage["total_tokens"] >= MAX_DAILY_OPENAI_TOKEN_LIMIT:
+            logger.error(f"Token usage exceeded limit {MAX_DAILY_OPENAI_TOKEN_LIMIT}. Aborting experiment.")
             if enable_notifications and telegram_notifier:
                 try:
                     telegram_notifier.send_telegram_message(

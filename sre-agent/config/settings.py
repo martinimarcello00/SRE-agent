@@ -24,6 +24,9 @@ MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", 8))
 # RCA tasks per iteration
 RCA_TASKS_PER_ITERATION = int(os.environ.get("RCA_TASKS_PER_ITERATION", 3))
 
+# Daily OpenAI token limit
+MAX_DAILY_OPENAI_TOKEN_LIMIT = int(os.environ.get("MAX_DAILY_OPENAI_TOKEN_LIMIT", 2_000_000))
+
 def apply_config_overrides(overrides: Mapping[str, Any]) -> None:
     """Update runtime knobs (called before launching each agent run)."""
     global MAX_TOOL_CALLS, RCA_TASKS_PER_ITERATION
