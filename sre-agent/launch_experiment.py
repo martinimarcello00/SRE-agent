@@ -35,7 +35,8 @@ async def run_sre_agent(
     target_namespace: str,
     trace_service_starting_point: str,
     trace_name: Optional[str] = None,
-    agent_configuration_name: Optional[str] = None
+    agent_configuration_name: Optional[str] = None,
+    agent_id: Optional[str] = None
 ) -> tuple[dict, float]:
     """Execute the complete SRE agent workflow.
     
@@ -70,6 +71,9 @@ async def run_sre_agent(
 
     if not agent_configuration_name:
         agent_configuration_name = "Default"
+
+    if not agent_id:
+        agent_id = "Z"
     
     start_time = time.time()
 
@@ -82,6 +86,7 @@ async def run_sre_agent(
             "experiment_name": trace_name or app_name,
             "fault_name" : fault_name,
             "agent_configuration": agent_configuration_name,
+            "agent_id" : agent_id,
             "parallel_rca_tasks": os.environ.get("RCA_TASKS_PER_ITERATION","Unknown"),
             "max_tool_calls": os.environ.get("MAX_TOOL_CALLS","Unknown")
         }
@@ -168,12 +173,16 @@ def export_json_results(
         application_name: str,
         target_namespace: str,
         trace_service_starting_point: str,
-        agent_configuration_name: Optional[str] = None
+        agent_configuration_name: Optional[str] = None,
+        agent_id: Optional[str] = None
         ) -> dict:
 
     export = result
 
     export["experiment_name"] = experiment_name
+
+    if agent_id:
+        export["agent_id"] = agent_id
     
     if agent_configuration_name:
         export["agent_configuration_name"] = agent_configuration_name
@@ -219,6 +228,11 @@ async def main():
     fault_name = ""
     while not fault_name:
         fault_name = input("Enter fault name (AIOpsLab experiment name): ").strip()
+
+    # Prompt for agent id (AIOpsLab experiment name)
+    agent_id = ""
+    while not agent_id:
+        agent_id = input("Enter agent configuration ID: ").strip()
     
     # Application configuration
     app_summary = """
@@ -244,7 +258,8 @@ async def main():
         target_namespace=target_namespace,
         trace_service_starting_point=service_starting_point,
         trace_name=experiment_name,
-        agent_configuration_name="Plain ReAct"
+        agent_configuration_name="Plain ReAct",
+        agent_id=agent_id
     )
 
     # Display results
@@ -270,7 +285,8 @@ async def main():
         fault_name=fault_name,
         application_name=app_name,
         target_namespace=target_namespace,
-        trace_service_starting_point=service_starting_point
+        trace_service_starting_point=service_starting_point,
+        agent_id=agent_id
     )
 
     output_dir = os.environ.get("RESULTS_PATH", "results")

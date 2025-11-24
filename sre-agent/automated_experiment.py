@@ -59,6 +59,7 @@ def get_experiment_dir_path(dir_name: str, experiment_path: Optional[str] = None
     return experiment_dir_path
 
 async def run_experiment(
+    agent_id: str,
     app_name: str,
     fault_name: str,
     app_summary: str,
@@ -89,7 +90,8 @@ async def run_experiment(
         target_namespace=target_namespace,
         trace_service_starting_point=trace_service_starting_point,
         trace_name=experiment_name,
-        agent_configuration_name=agent_configuration_name
+        agent_configuration_name=agent_configuration_name,
+        agent_id=agent_id
     )
 
     logger.info("Waiting 15 seconds to allow LangSmith to import final experiment data before saving results...")
@@ -108,7 +110,8 @@ async def run_experiment(
         application_name=app_name,
         target_namespace=target_namespace,
         trace_service_starting_point=trace_service_starting_point,
-        agent_configuration_name=agent_configuration_name
+        agent_configuration_name=agent_configuration_name,
+        agent_id=agent_id
     )
 
     if results_group_dir is not None:
@@ -314,6 +317,7 @@ def main():
 
                 enriched_result, output_file_path = asyncio.run(
                     run_experiment(
+                        agent_id = agent_id,
                         fault_name=scenario["fault_type"],
                         app_name=scenario["app_name"],
                         app_summary=scenario["app_summary"],
