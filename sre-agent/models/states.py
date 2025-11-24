@@ -1,8 +1,8 @@
 """TypedDict state definitions for LangGraph agents."""
 from typing import TypedDict, List, Annotated, Dict
-import operator
 from langgraph.graph.message import add_messages, AnyMessage
 from .schemas import Symptom, RCATask
+from .reducers import merge_rca_analyses
 
 
 class TriageAgentState(TypedDict):
@@ -72,7 +72,7 @@ class SreParentState(TypedDict):
     rca_tasks: List[RCATask]
 
     # RCA Worker agent
-    rca_analyses_list: Annotated[list[dict], operator.add]
+    rca_analyses_list: Annotated[list[dict], merge_rca_analyses]
 
     # Tasks to be executed by the RCA agent
     tasks_to_be_executed: List[int]
