@@ -17,8 +17,8 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-from utils import TelegramNotification, get_today_completions_usage
-from config import apply_config_overrides, MAX_DAILY_OPENAI_TOKEN_LIMIT
+from utils import TelegramNotification, get_today_model_usage
+from config import apply_config_overrides, MAX_DAILY_OPENAI_TOKEN_LIMIT, AIOPSLAB_DIR
 
 # Configure logging for the SRE Agent script
 logging.basicConfig(
@@ -220,9 +220,9 @@ def main():
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Failed to send Telegram start message: %s", exc)
 
-        pre_run_usage = get_today_completions_usage()
+        pre_run_usage = get_today_model_usage(model_name="gpt-5-mini")
         logger.info(
-            "Current token usage before scenario %d: input=%d, output=%d, total=%d",
+            "Current token usage (gpt-5-mini) before scenario %d: input=%d, output=%d, total=%d",
             scenario_idx,
             pre_run_usage["input_tokens"],
             pre_run_usage["output_tokens"],
@@ -299,9 +299,10 @@ def main():
 
                 apply_config_overrides(agent_conf)
 
-                usage = get_today_completions_usage()
+                usage = get_today_model_usage(model_name="gpt-5-mini")
+
                 logger.info(
-                    "Current token usage before run: input=%d, output=%d, total=%d",
+                    "Current token usage (gpt-5-mini) before run: input=%d, output=%d, total=%d",
                     usage["input_tokens"],
                     usage["output_tokens"],
                     usage["total_tokens"],

@@ -18,6 +18,8 @@ sys.path.insert(0, mcp_server_path)
 # LLM Configuration
 GPT5_MINI = ChatOpenAI(model="gpt-5-mini")
 
+GPT5_1 = ChatOpenAI(model="gpt-5.1")
+
 # Investigation Budget
 MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", 8))
 
@@ -26,6 +28,8 @@ RCA_TASKS_PER_ITERATION = int(os.environ.get("RCA_TASKS_PER_ITERATION", 3))
 
 # Daily OpenAI token limit
 MAX_DAILY_OPENAI_TOKEN_LIMIT = int(os.environ.get("MAX_DAILY_OPENAI_TOKEN_LIMIT", 2_000_000))
+
+AIOPSLAB_DIR = os.environ.get("AIOPSLAB_DIR")
 
 def apply_config_overrides(overrides: Mapping[str, Any]) -> None:
     """Update runtime knobs (called before launching each agent run)."""
