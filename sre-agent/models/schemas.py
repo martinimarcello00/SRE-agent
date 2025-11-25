@@ -59,3 +59,8 @@ class SupervisorDecision(BaseModel):
         default=None,
         description="The final root cause report. Provide this ONLY if the investigation is COMPLETE and the evidence is sufficient."
     )
+
+class EvaluationResult(BaseModel):
+    """Evaluation result for an RCA diagnosis."""
+    score: int = Field(..., ge=1, le=5, description="Numeric evaluation score (1-5)")
+    reasoning: str = Field(..., description="Very short reasoning for the score (1-2 sentences max)")

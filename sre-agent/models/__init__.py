@@ -6,7 +6,8 @@ from .schemas import (
     RCATaskList,
     RCAAgentExplaination,
     FinalReport,
-    SupervisorDecision
+    SupervisorDecision,
+    EvaluationResult
 )
 
 from .states import (
@@ -25,11 +26,12 @@ __all__ = [
     'RCATaskList',
     'RCAAgentExplaination',
     'FinalReport',
+    'SupervisorDecision',
+    'EvaluationResult',
     # States
     'TriageAgentState',
     'PlannerAgentState',
     'RcaAgentState',
     'SupervisorAgentState',
     'SreParentState',
-    'SupervisorDecision'
 ]
