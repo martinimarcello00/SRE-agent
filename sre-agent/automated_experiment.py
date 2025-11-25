@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 
 from utils import TelegramNotification, get_today_model_usage
 from config import apply_config_overrides, MAX_DAILY_OPENAI_TOKEN_LIMIT, AIOPSLAB_DIR
+from evaluation import evaluate_experiment
 
 # Configure logging for the SRE Agent script
 logging.basicConfig(
@@ -60,20 +61,23 @@ def get_experiment_dir_path(dir_name: str, experiment_path: Optional[str] = None
 
 async def run_experiment(
     agent_id: str,
-    app_name: str,
-    fault_name: str,
-    app_summary: str,
-    target_namespace: str,
-    trace_service_starting_point: str,
-    wait_time_before_running_agent: int,
+    fault_scenario: dict,
     agent_configuration_name: str,
     run_sre_agent_func,
     export_json_results_func,
+    evaluation_func,
     batch_name: str,
     results_group_dir: Optional[Path] = None,
     prompts_config: Optional[dict[str,str]] = None
 ) -> tuple[dict, Path]:
     
+    fault_name = fault_scenario.get("fault_type", "")
+    app_name = fault_scenario.get("scenario", "")
+    app_summary = fault_scenario.get("app_summary", "")
+    target_namespace = fault_scenario.get("target_namespace", "")
+    trace_service_starting_point = fault_scenario.get("service_starting_point", "")
+    wait_time_before_running_agent = int(fault_scenario.get("wait_before_launch_agent", 60))
+
     logger.info(
         "Waiting %s seconds before running the SRE agent",
         wait_time_before_running_agent,
@@ -124,6 +128,8 @@ async def run_experiment(
             output_dir_path = Path.cwd() / output_dir_path
     output_dir_path.mkdir(parents=True, exist_ok=True)
     output_file_path = output_dir_path / output_file
+
+    enriched_result["evaluation"] = evaluate_experiment(fault_scenario,enriched_result)
 
     with open(output_file_path, "w") as f:
         json.dump(enriched_result, f, indent=2, default=str)
@@ -307,8 +313,8 @@ def main():
                     usage["output_tokens"],
                     usage["total_tokens"],
                 )
-                if usage["total_tokens"] >= 2_000_000:
-                    logger.error("Token usage exceeded limit (2,000,000). Aborting experiment.")
+                if usage["total_tokens"] >= MAX_DAILY_OPENAI_TOKEN_LIMIT:
+                    logger.error(f"Token usage exceeded limit ({MAX_DAILY_OPENAI_TOKEN_LIMIT}). Aborting experiment.")
                     if enable_notifications and telegram_notifier:
                         try:
                             telegram_notifier.send_telegram_message(
@@ -321,16 +327,12 @@ def main():
                 enriched_result, output_file_path = asyncio.run(
                     run_experiment(
                         agent_id = agent_id,
-                        fault_name=scenario["fault_type"],
-                        app_name=scenario["app_name"],
-                        app_summary=scenario["app_summary"],
-                        target_namespace=scenario["target_namespace"],
-                        trace_service_starting_point=scenario["service_starting_point"],
-                        wait_time_before_running_agent=scenario["wait_before_launch_agent"],
+                        fault_scenario=scenario,
                         agent_configuration_name=formatted_agent_name,
                         batch_name=batch_dir_name,
                         run_sre_agent_func=run_sre_agent,
                         export_json_results_func=export_json_results,
+                        evaluation_func=evaluate_experiment,
                         results_group_dir=results_group_path,
                         prompts_config=prompts_config
                     )
