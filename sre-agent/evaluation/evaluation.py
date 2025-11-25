@@ -49,7 +49,7 @@ def evaluate_localization(fault_scenario: dict, localization: str) -> bool:
     # Check if the target is contained in the localization string
     return target in localization
 
-def evaluate_rca_analysis(fault_scenario: dict, rca_analysis: str) -> tuple[Optional[int], str]:
+def evaluate_rca_analysis(fault_scenario: dict, rca_analysis: str, langsmith_metadata: Optional[dict] = None) -> tuple[Optional[int], str]:
     """
     Evaluates the root cause analysis (RCA) result using an LLM and returns a score and explanation.
 
@@ -72,7 +72,16 @@ def evaluate_rca_analysis(fault_scenario: dict, rca_analysis: str) -> tuple[Opti
         rca_analysis=rca_analysis
     )
     try:
-        result = llm_judge.invoke(prompt)
+
+        config = {
+            "run_name" : "LLM as a Judge",
+            "tags": ["evaluation"]
+        }
+
+        if langsmith_metadata:
+            config["metadata"] = langsmith_metadata
+
+        result = llm_judge.invoke(prompt, config) # type: ignore
         score = getattr(result, "score", None)
         explanation = getattr(result, "reasoning", "")
         return score, explanation
@@ -82,12 +91,20 @@ def evaluate_rca_analysis(fault_scenario: dict, rca_analysis: str) -> tuple[Opti
     
 def evaluate_experiment(fault_scenario: dict, report: dict)-> dict:
     agent_conf_name = report.get("agent_configuration_name", "N/A")
-    formatted_scenario = f"{fault_scenario.get("scenario")} - {fault_scenario.get("fault_type")}"
+    formatted_scenario = f"{fault_scenario.get('scenario')} - {fault_scenario.get('fault_type')}"
     logger.info(
         "Evaluating experiment for agent configuration: %s, scenario: %s",
         agent_conf_name,
         formatted_scenario
     )
+
+    llmJudge_metadata = {
+        "agent_configuration_name" : report.get("agent_configuration_name"),
+        "agent_id" : report.get("agent_id"),
+        "scenario" : fault_scenario.get("scenario"),
+        "fault_type" : fault_scenario.get("fault_type")
+    }
+
     evaluation = {}
 
     detection = report.get("final_report", {}).get("detection", False)
@@ -102,6 +119,6 @@ def evaluate_experiment(fault_scenario: dict, report: dict)-> dict:
 
     evaluation["detection"] = evaluate_detection(fault_scenario, detection)
     evaluation["localization"] = evaluate_localization(fault_scenario, localization_str)
-    evaluation["rca_score"], evaluation["rca_motivation"] = evaluate_rca_analysis(fault_scenario, rca_analtysis)
+    evaluation["rca_score"], evaluation["rca_motivation"] = evaluate_rca_analysis(fault_scenario, rca_analtysis, llmJudge_metadata)
 
     return evaluation
