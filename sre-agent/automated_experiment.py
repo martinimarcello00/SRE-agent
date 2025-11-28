@@ -4,6 +4,7 @@ from experiments_runner import (
     load_fault_scenarios,
     load_agent_configurations,
 )
+from experiments_runner.automated_datagraph import update_datagraph_for_scenario
 
 import asyncio
 import datetime
@@ -30,6 +31,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("mcp.client.streamable_http").setLevel(logging.WARNING)
 
 logger = logging.getLogger("automated_experiment")
+
 
 def get_experiment_dir_path(dir_name: str, experiment_path: Optional[str] = None):
     """
@@ -217,6 +219,22 @@ def main():
     total_configs = len(agents_configurations)
 
     for scenario_idx, scenario in enumerate(fault_scenarios, start=1):
+        
+        # Override TARGET_NAMESPACE environment variable from scenario
+        target_namespace = scenario.get("target_namespace", "")
+        if target_namespace:
+            logger.info("Setting TARGET_NAMESPACE env var from scenario: %s", target_namespace)
+            os.environ["TARGET_NAMESPACE"] = target_namespace
+
+        # Override environment variables from scenario config
+        env_variables = scenario.get("env_variables", {})
+        if env_variables:
+            logger.info("Loading environment variable overrides from scenario config:")
+            for key, value in env_variables.items():
+                logger.info("  - Setting %s = %s", key, value)
+                os.environ[key] = str(value)
+        else:
+            logger.info("No environment variable overrides specified in scenario config")
 
         if enable_notifications and telegram_notifier:
             try:
@@ -250,8 +268,16 @@ def main():
         logger.info("Fault: %s", scenario.get("fault_type", "Unknown Fault"))
 
         try:
-            # Step 1: Setup cluster and AIOpsLab
-            logger.info("=== STEP 1: Setup kind and aiopslab ===")
+            # Step 1: Update datagraph for this scenario
+            logger.info("=== STEP 1: Update Datagraph ===")
+            scenario_name = scenario.get("scenario", "")
+            if scenario_name:
+                update_datagraph_for_scenario(scenario_name)
+            else:
+                logger.warning("No scenario name found, skipping datagraph update")
+
+            # Step 2: Setup cluster and AIOpsLab
+            logger.info("=== STEP 2: Setup kind and aiopslab ===")
 
             success = setup_cluster_and_aiopslab(
                 problem_id=scenario["aiopslab_command"],
@@ -266,9 +292,9 @@ def main():
             # Import AFTER setup complete, before starting any event loop
             from launch_experiment import run_sre_agent, export_json_results
 
-            # Step 2: Run your experiment (new event loop for async execution)
+            # Step 3: Run your experiment (new event loop for async execution)
 
-            logger.info("=== STEP 2: Run SRE Agent ===")
+            logger.info("=== STEP 3: Run SRE Agent ===")
 
             for config_idx, agent_conf in enumerate(agents_configurations, start=1):
                 agent_name = agent_conf.get("name", "Unknown Agent Configuration")
@@ -298,6 +324,7 @@ def main():
                     for key in ("MAX_TOOL_CALLS", "RCA_TASKS_PER_ITERATION")
                     if key in agent_conf
                 }
+
                 if overrides_to_log:
                     logger.info("Applying overrides: %s", overrides_to_log)
                 else:
@@ -396,8 +423,8 @@ def main():
                 except Exception as exc:  # pragma: no cover
                     logger.warning("Failed to send Telegram completion message: %s", exc)
 
-            # Step 3: Cleanup
-            logger.info("=== STEP 3: Cleanup ===")
+            # Step 4: Cleanup
+            logger.info("=== STEP 4: Cleanup ===")
 
             # Cleanup cluster (MCP server cleanup is handled automatically by MultiServerMCPClient)
             cleanup_cluster()
