@@ -174,7 +174,7 @@ def setup_cluster_and_aiopslab(
     kind_config_path=None,
     aiopslab_dir=None,
     cluster_timeout=600,
-    setup_timeout=300,
+    setup_timeout=900,
     stream_cluster_output=False,
     stream_cli_output=False,
     enable_local_registry=True,
