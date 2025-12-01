@@ -23,15 +23,5 @@ async def get_mcp_tools(mcp_client: MultiServerMCPClient) -> list:
     return tools
 
 
-def create_mcp_client() -> MultiServerMCPClient:
-    """Create and return an MCP client with configured servers.
-    
-    Returns:
-        Configured MCP client instance
-    """
-    return MultiServerMCPClient(MCP_CONFIG)
-
-
-# Initialize tools on module import
-_mcp_client = create_mcp_client()
+_mcp_client = MultiServerMCPClient(MCP_CONFIG)
 TOOLS = asyncio.run(get_mcp_tools(_mcp_client))

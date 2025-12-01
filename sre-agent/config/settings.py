@@ -47,22 +47,51 @@ def apply_config_overrides(overrides: Mapping[str, Any]) -> None:
 _MCP_SERVER_PATH = os.path.join(root_dir, "MCP-server", "mcp_server.py")
 _MCP_SERVER_DIR = os.path.join(root_dir, "MCP-server")
 
-MCP_CONFIG = {
-    "kubernetes": {
-        "command": "npx",
-        "args": ["mcp-server-kubernetes"],
-        "transport": "stdio",
-        "env": {
-            "ALLOW_ONLY_NON_DESTRUCTIVE_TOOLS": "true"
-        }
-    },
-    "cluster_api": {
-        "command": "poetry",
-        # "args": ["-C", _MCP_SERVER_DIR, "run", "python", _MCP_SERVER_PATH],
-        "args": ["run", "python", _MCP_SERVER_PATH],
-        "transport": "stdio",
+def get_mcp_config() -> dict:
+    """Get MCP configuration with current environment variables.
+    
+    This function builds the MCP config dynamically, ensuring all relevant
+    environment variables are passed to the MCP server subprocess.
+    """
+    # Collect environment variables to pass to MCP server
+    env_vars = {
+        "ALLOW_ONLY_NON_DESTRUCTIVE_TOOLS": "true"
     }
-}
+    
+    # Add all observability-related environment variables
+    env_keys_to_pass = [
+        "TARGET_NAMESPACE",
+        "PROMETHEUS_SERVER_URL",
+        "JAEGER_URL",
+        "NEO4J_URI",
+        "NEO4J_USER",
+        "NEO4J_PASSWORD",
+    ]
+    
+    for key in env_keys_to_pass:
+        value = os.environ.get(key)
+        if value is not None:
+            env_vars[key] = value
+    
+    return {
+        "kubernetes": {
+            "command": "npx",
+            "args": ["mcp-server-kubernetes"],
+            "transport": "stdio",
+            "env": {
+                "ALLOW_ONLY_NON_DESTRUCTIVE_TOOLS": "true"
+            }
+        },
+        "cluster_api": {
+            "command": "poetry",
+            "args": ["run", "python", _MCP_SERVER_PATH],
+            "transport": "stdio",
+            "env": env_vars
+        }
+    }
+
+# Initial MCP config - will be updated when creating client
+MCP_CONFIG = get_mcp_config()
 
 # Tool Configuration
 K8S_TOOLS_ALLOWED = [

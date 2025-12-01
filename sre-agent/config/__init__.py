@@ -10,7 +10,8 @@ from .settings import (
     RCA_TASKS_PER_ITERATION,
     MAX_DAILY_OPENAI_TOKEN_LIMIT,
     AIOPSLAB_DIR,
-    apply_config_overrides
+    apply_config_overrides,
+    get_mcp_config
 )
 
 __all__ = [
@@ -24,5 +25,6 @@ __all__ = [
     'RCA_TASKS_PER_ITERATION',
     'MAX_DAILY_OPENAI_TOKEN_LIMIT',
     'apply_config_overrides',
-    'AIOPSLAB_DIR'
+    'AIOPSLAB_DIR',
+    'get_mcp_config'
 ]
