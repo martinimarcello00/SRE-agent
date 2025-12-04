@@ -19,7 +19,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from utils import TelegramNotification, get_today_model_usage
-from config import apply_config_overrides, MAX_DAILY_OPENAI_TOKEN_LIMIT, AIOPSLAB_DIR
+from config import apply_config_overrides, MAX_DAILY_OPENAI_TOKEN_LIMIT, AIOPSLAB_DIR, TRACE_SERVICE_STARTING_POINT
 from evaluation import evaluate_experiment
 
 # Configure logging for the SRE Agent script
@@ -77,7 +77,7 @@ async def run_experiment(
     app_name = fault_scenario.get("scenario", "")
     app_summary = fault_scenario.get("app_summary", "")
     target_namespace = fault_scenario.get("target_namespace", "")
-    trace_service_starting_point = fault_scenario.get("service_starting_point", "")
+    trace_service_starting_point = fault_scenario.get("service_starting_point", "") or TRACE_SERVICE_STARTING_POINT
     wait_time_before_running_agent = int(fault_scenario.get("wait_before_launch_agent", 60))
 
     logger.info(

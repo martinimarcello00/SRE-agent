@@ -26,6 +26,9 @@ MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", 8))
 # RCA tasks per iteration
 RCA_TASKS_PER_ITERATION = int(os.environ.get("RCA_TASKS_PER_ITERATION", 3))
 
+# Trace service starting point for investigations
+TRACE_SERVICE_STARTING_POINT = os.environ.get("TRACE_SERVICE_STARTING_POINT", "frontend")
+
 # Daily OpenAI token limit
 MAX_DAILY_OPENAI_TOKEN_LIMIT = int(os.environ.get("MAX_DAILY_OPENAI_TOKEN_LIMIT", 2_000_000))
 
@@ -33,15 +36,18 @@ AIOPSLAB_DIR = os.environ.get("AIOPSLAB_DIR")
 
 def apply_config_overrides(overrides: Mapping[str, Any]) -> None:
     """Update runtime knobs (called before launching each agent run)."""
-    global MAX_TOOL_CALLS, RCA_TASKS_PER_ITERATION
+    global MAX_TOOL_CALLS, RCA_TASKS_PER_ITERATION, TRACE_SERVICE_STARTING_POINT
 
     if "MAX_TOOL_CALLS" in overrides:
         os.environ["MAX_TOOL_CALLS"] = str(overrides["MAX_TOOL_CALLS"])
     if "RCA_TASKS_PER_ITERATION" in overrides:
         os.environ["RCA_TASKS_PER_ITERATION"] = str(overrides["RCA_TASKS_PER_ITERATION"])
+    if "TRACE_SERVICE_STARTING_POINT" in overrides:
+        os.environ["TRACE_SERVICE_STARTING_POINT"] = str(overrides["TRACE_SERVICE_STARTING_POINT"])
 
     MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", MAX_TOOL_CALLS))
     RCA_TASKS_PER_ITERATION = int(os.environ.get("RCA_TASKS_PER_ITERATION", RCA_TASKS_PER_ITERATION))
+    TRACE_SERVICE_STARTING_POINT = os.environ.get("TRACE_SERVICE_STARTING_POINT", TRACE_SERVICE_STARTING_POINT)
 
 # MCP Server Configuration - Stdio-based (automatically spawned by client)
 _MCP_SERVER_PATH = os.path.join(root_dir, "MCP-server", "mcp_server.py")
@@ -66,6 +72,7 @@ def get_mcp_config() -> dict:
         "NEO4J_URI",
         "NEO4J_USER",
         "NEO4J_PASSWORD",
+        "TRACE_SERVICE_STARTING_POINT",
     ]
     
     for key in env_keys_to_pass:

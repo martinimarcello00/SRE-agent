@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 # Mapping of scenario names to their datagraph config files
 SCENARIO_DATAGRAPH_MAP = {
     "hotel reservation": "hotel-reservation-datagraph.txt",
-    "astronomy shop" : "astronomy-shop-datagraph.txt"
+    "astronomy shop" : "astronomy-shop-datagraph.txt",
+    "social network" : "social-network-datagraph.txt"
 }
 
 # Directory containing datagraph config files
