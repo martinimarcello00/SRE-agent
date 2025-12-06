@@ -13,15 +13,16 @@ LOCAL_REGISTRY_NAME = "kind-registry"
 LOCAL_REGISTRY_PORT = 5001
 
 
-def run_command_with_wait(command, timeout=600, encoding='utf-8', stream_output=False):
+def run_command_with_wait(command, timeout=600, encoding='utf-8', stream_output=False, wait_for_string=None):
     """
-    Run a command and wait for it to complete.
+    Run a command and wait for it to complete or for a specific string to appear.
     
     Args:
         command: The command to execute
         timeout: Maximum time to wait for command completion (in seconds)
         encoding: Character encoding for output
         stream_output: If True, stream the subprocess output to stdout
+        wait_for_string: Optional string pattern to wait for before considering command complete
         
     Returns:
         tuple: (exit_code, output)
@@ -33,9 +34,22 @@ def run_command_with_wait(command, timeout=600, encoding='utf-8', stream_output=
         child.logfile_read = sys.stdout
     
     try:
-        # Wait for the process to finish
-        child.expect(pexpect.EOF)
-        output = child.before
+        if wait_for_string:
+            # Wait for the specific string to appear
+            logger.info("Waiting for string pattern: %s", wait_for_string)
+            child.expect(wait_for_string)
+            output = child.before
+            logger.info("Found expected string pattern: %s", wait_for_string)
+            # Continue waiting for EOF to ensure process completes
+            try:
+                child.expect(pexpect.EOF, timeout=10)
+            except pexpect.TIMEOUT:
+                logger.debug("Process still running after string appeared, closing...")
+        else:
+            # Wait for the process to finish
+            child.expect(pexpect.EOF)
+            output = child.before
+        
         child.close()
         if output:
             logger.debug("Command output for '%s':\n%s", command, output.strip())
@@ -306,7 +320,7 @@ def setup_cluster_and_aiopslab(
 
 def cleanup_cluster(cluster_timeout=120, stream_output=False):
     """
-    Delete the kind cluster.
+    Delete the kind cluster and wait for confirmation of node deletion.
     
     Args:
         cluster_timeout: Timeout for cluster deletion in seconds
@@ -318,10 +332,12 @@ def cleanup_cluster(cluster_timeout=120, stream_output=False):
     logger.info("Deleting kind cluster")
     
     delete_command = "kind delete cluster"
-    delete_exit_code, _ = run_command_with_wait(
+    # Wait for the "Deleted nodes:" string to confirm nodes were deleted
+    delete_exit_code, output = run_command_with_wait(
         delete_command,
         timeout=cluster_timeout,
         stream_output=stream_output,
+        wait_for_string=r"Deleted nodes:\s*\[.*\]",
     )
     
     if delete_exit_code != 0:
@@ -332,4 +348,6 @@ def cleanup_cluster(cluster_timeout=120, stream_output=False):
         return False
     else:
         logger.info("Kind cluster deleted successfully")
+        if output:
+            logger.debug("Cluster deletion output:\n%s", output)
         return True
