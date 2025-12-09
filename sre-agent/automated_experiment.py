@@ -267,6 +267,7 @@ def main():
         logger.info("Scenario: %s", scenario.get("scenario", "Unknown Scenario"))
         logger.info("Fault: %s", scenario.get("fault_type", "Unknown Fault"))
 
+        cluster_setup_successful = False
         try:
             # Step 1: Update datagraph for this scenario
             logger.info("=== STEP 1: Update Datagraph ===")
@@ -286,8 +287,25 @@ def main():
             )
 
             if not success:
-                logger.error("Setup failed; aborting run")
-                sys.exit(1)
+                logger.error("Setup failed for scenario '%s'; cleaning up cluster before moving to next scenario", scenario.get("scenario", "Unknown Scenario"))
+                
+                # Attempt to clean up the cluster even though setup failed
+                try:
+                    cleanup_cluster()
+                    logger.info("Cluster cleanup completed after setup failure")
+                except Exception as cleanup_error:
+                    logger.error("Error during cleanup after setup failure: %s", cleanup_error)
+                
+                if enable_notifications and telegram_notifier:
+                    try:
+                        telegram_notifier.send_telegram_message(
+                            f"❌ Setup failed for scenario '{scenario.get('scenario', 'Unknown Scenario')}'. Cluster cleaned up. Skipping to next scenario."
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to send Telegram setup failure message: %s", exc)
+                continue
+            
+            cluster_setup_successful = True
 
             # Import AFTER setup complete, before starting any event loop
             from launch_experiment import run_sre_agent, export_json_results
@@ -423,28 +441,17 @@ def main():
                 except Exception as exc:  # pragma: no cover
                     logger.warning("Failed to send Telegram completion message: %s", exc)
 
-            # Step 4: Cleanup
-            logger.info("=== STEP 4: Cleanup ===")
-
-            # Cleanup cluster (MCP server cleanup is handled automatically by MultiServerMCPClient)
-            cleanup_cluster()
-
-            logger.info("All cleanup steps completed")
-            logger.info("Pausing briefly before launching the next scenario...")
-            time.sleep(10)
-
         except KeyboardInterrupt:
-            logger.warning("Interrupted by user; performing cleanup")
-            cleanup_cluster()
+            logger.warning("Interrupted by user (Ctrl+C); performing cleanup")
             if enable_notifications and telegram_notifier:
                 try:
-                    telegram_notifier.send_telegram_message("⚠️ Experiment interrupted by user.")
+                    telegram_notifier.send_telegram_message("⚠️ Experiment interrupted by user (Ctrl+C).")
                 except Exception as exc:  # pragma: no cover
                     logger.warning("Failed to send Telegram interrupt message: %s", exc)
-            sys.exit(130)
+            raise  # Re-raise to be handled by outer exception handler
+        
         except Exception as e:
-            logger.exception("Experiment execution failed: %s", e)
-            cleanup_cluster()
+            logger.exception("Experiment execution failed for scenario '%s': %s", scenario.get("scenario", "Unknown Scenario"), e)
             if enable_notifications and telegram_notifier:
                 try:
                     telegram_notifier.send_telegram_message(
@@ -452,7 +459,28 @@ def main():
                     )
                 except Exception as exc:  # pragma: no cover
                     logger.warning("Failed to send Telegram exception message: %s", exc)
-            sys.exit(1)
+            # Don't exit, just skip to next scenario after cleanup
+        
+        finally:
+            # Step 4: Cleanup (always executed at the end of each scenario iteration)
+            logger.info("=== STEP 4: Cleanup ===")
+            try:
+                # Cleanup cluster (MCP server cleanup is handled automatically by MultiServerMCPClient)
+                # This runs regardless of setup success to ensure any partial cluster is removed
+                cleanup_cluster()
+                logger.info("Cluster cleanup completed successfully")
+            except Exception as cleanup_error:
+                logger.error("Error during cluster cleanup: %s", cleanup_error)
+                if enable_notifications and telegram_notifier:
+                    try:
+                        telegram_notifier.send_telegram_message(
+                            f"⚠️ Cleanup error for scenario '{scenario.get('scenario', 'Unknown Scenario')}': {cleanup_error}"
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to send Telegram cleanup error message: %s", exc)
+            
+            logger.info("Pausing briefly before launching the next scenario...")
+            time.sleep(10)
 
     if enable_notifications and telegram_notifier:
         try:
@@ -464,4 +492,11 @@ def main():
         logging.getLogger().removeHandler(telegram_handler)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.warning("\n\nExperiment batch interrupted by user (Ctrl+C). Exiting.")
+        sys.exit(130)
+    except Exception as e:
+        logger.exception("Fatal error in experiment batch: %s", e)
+        sys.exit(1)
