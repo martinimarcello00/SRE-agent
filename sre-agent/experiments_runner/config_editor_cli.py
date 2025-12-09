@@ -86,15 +86,15 @@ class ConfigurationEditor:
         return configs
 
     def display_agent_configs(self) -> None:
-        """Display all agent configurations with their current execute status."""
+        """Display all agent configurations with their current execute status, using agent id as index."""
         print("\n" + "=" * 80)
         print("AGENT CONFIGURATIONS")
         print("=" * 80)
-        for idx, (filename, (config, _)) in enumerate(self.agent_configs.items(), 1):
+        for filename, (config, _) in self.agent_configs.items():
             name = config.get("name", "Unknown")
             agent_id = config.get("id", "Unknown")
             execute = "✓" if config.get("execute", False) else "✗"
-            print(f"{idx:2d}. [{execute}] {agent_id} - {name:40s} ({filename})")
+            print(f"{agent_id}. [{execute}] {agent_id} - {name:40s} ({filename})")
 
     def display_scenarios(self) -> None:
         """Display all fault scenarios with their current execute status."""
