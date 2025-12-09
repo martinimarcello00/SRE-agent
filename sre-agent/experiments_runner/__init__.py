@@ -2,6 +2,7 @@ from .automate_cluster_creation import setup_cluster_and_aiopslab, cleanup_clust
 from .automate_mcp_server import start_mcp_server, cleanup_mcp_server
 from .get_scenarios import load_fault_scenarios
 from .get_agent_configurations import load_agent_configurations
+from .config_editor_cli import ConfigurationEditor
 
 __all__ = [
     'setup_cluster_and_aiopslab',
@@ -9,5 +10,6 @@ __all__ = [
     'start_mcp_server',
     'cleanup_mcp_server',
     'load_fault_scenarios',
-    'load_agent_configurations'
+    'load_agent_configurations',
+    'ConfigurationEditor'
 ]
