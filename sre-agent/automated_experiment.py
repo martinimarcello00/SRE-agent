@@ -402,6 +402,10 @@ def main():
                         exec_seconds = stats.get("execution_time_seconds", "N/A")
                         langsmith_url = stats.get("langsmith_url", "N/A")
                         
+                        # Format numeric fields safely
+                        exec_seconds_str = str(int(round(exec_seconds))) if isinstance(exec_seconds, (int, float)) else str(exec_seconds)
+                        total_tokens_str = str(int(round(total_tokens))) if isinstance(total_tokens, (int, float)) else str(total_tokens)
+                        
                         # Format localization field (sorted, or indicate if empty)
                         if localization:
                             localization_str = ", ".join(sorted(localization))
@@ -415,8 +419,8 @@ def main():
                                     f"Detection: {'✅ Yes' if detection else '❌ No'}",
                                     f"Localization: {localization_str}",
                                     f"Root cause: {root_cause}",
-                                    f"Execution time: {int(round(exec_seconds))} seconds",
-                                    f"Total tokens: {int(round(total_tokens))}",
+                                    f"Execution time: {exec_seconds_str} seconds",
+                                    f"Total tokens: {total_tokens_str}",
                                     f"LangSmith run: {langsmith_url}",
                                 ]
                             )
