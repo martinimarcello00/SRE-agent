@@ -70,7 +70,9 @@ async def run_experiment(
     evaluation_func,
     batch_name: str,
     results_group_dir: Optional[Path] = None,
-    prompts_config: Optional[dict[str,str]] = None
+    prompts_config: Optional[dict[str,str]] = None,
+    run_index: int = 0,
+    total_runs: int = 1
 ) -> tuple[dict, Path]:
     
     fault_name = fault_scenario.get("fault_type", "")
@@ -107,7 +109,11 @@ async def run_experiment(
     # Save results
     date_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     safe_experiment_name = experiment_name.replace(" ", "-")
-    output_file = f"{date_str}_{safe_experiment_name}.json"
+    # Only add index prefix if there are multiple runs
+    if total_runs > 1:
+        output_file = f"{run_index}_{date_str}_{safe_experiment_name}.json"
+    else:
+        output_file = f"{date_str}_{safe_experiment_name}.json"
 
     enriched_result = export_json_results_func(
         result=result,
@@ -165,7 +171,8 @@ def main():
         logger.error("No agent configurations found. Exiting.")
         return
 
-    total_runs = len(fault_scenarios) * len(agents_configurations)
+    # Calculate total runs accounting for multiple runs per configuration
+    total_runs = sum(len(fault_scenarios) * agent.get("runs", 1) for agent in agents_configurations)
     print(f"\n\nThe following experiments will be executed ({total_runs} experiments):")
     for scenario_idx, scenario in enumerate(fault_scenarios, start=1):
         for config_idx, agent in enumerate(agents_configurations, start=1):
@@ -173,7 +180,9 @@ def main():
             scenario_name = scenario.get("scenario", "Unknown Scenario")
             fault_type = scenario.get("fault_type", "Unknown Fault")
             agent_conf_name = agent.get("name", "Unknown Agent Configuration")
-            print(f"{scenario_idx}{agent_id}. {agent_conf_name} - {scenario_name} — {fault_type}")
+            num_runs = agent.get("runs", 1)
+            runs_suffix = f" ({num_runs} runs)" if num_runs > 1 else ""
+            print(f"{scenario_idx}{agent_id}. {agent_conf_name} - {scenario_name} — {fault_type}{runs_suffix}")
 
     proceed_input = input("\nProceed with these experiments? [y/N]: ").strip().lower()
     if proceed_input not in {"y", "yes"}:
@@ -319,117 +328,141 @@ def main():
                 agent_id = agent_conf.get("id", "Unknown ID")
                 prompts_config = agent_conf.get("prompts_config", {})
                 formatted_agent_name = f"{agent_id} - {agent_name}"
+                
+                # Get number of runs from agent configuration (default to 1)
+                num_runs = agent_conf.get("runs", 1)
+                
                 logger.info(
-                    "Running agent configuration %s (%d/%d) for scenario '%s': %s",
+                    "Running agent configuration %s (%d/%d) for scenario '%s': %s (%d run(s))",
                     agent_id,
                     config_idx,
                     total_configs,
                     scenario.get("scenario", "Unknown Scenario"),
                     agent_name,
+                    num_runs,
                 )
 
-                experiment_label = f"{formatted_agent_name} - {scenario.get('app_name', scenario.get('scenario', 'Unknown App'))} - {scenario.get('fault_type', 'Unknown Fault')}"
-                if enable_notifications and telegram_notifier:
-                    try:
-                        telegram_notifier.send_telegram_message(
-                            f"🧪 Starting experiment '{experiment_label}' ({agent_id})"
-                        )
-                    except Exception as exc:  # pragma: no cover
-                        logger.warning("Failed to send Telegram experiment start message: %s", exc)
+                # Create agent-specific results directory if multiple runs
+                agent_results_dir = results_group_path
+                if num_runs > 1:
+                    agent_result_dir_name = f"{agent_id} - {scenario.get('scenario', 'Unknown Scenario')} - {scenario.get('fault_type', 'Unknown Fault')}"
+                    agent_results_dir = results_group_path / agent_result_dir_name
+                    agent_results_dir.mkdir(parents=True, exist_ok=True)
+                    logger.info("Created agent-specific results directory: %s", agent_results_dir)
 
-                overrides_to_log = {
-                    key: agent_conf[key]
-                    for key in ("MAX_TOOL_CALLS", "RCA_TASKS_PER_ITERATION")
-                    if key in agent_conf
-                }
-
-                if overrides_to_log:
-                    logger.info("Applying overrides: %s", overrides_to_log)
-                else:
-                    logger.info("No overrides specified; using existing runtime settings.")
-
-                apply_config_overrides(agent_conf)
-
-                usage = get_today_model_usage(model_name="gpt-5-mini")
-
-                logger.info(
-                    "Current token usage (gpt-5-mini) before run: input=%d, output=%d, total=%d",
-                    usage["input_tokens"],
-                    usage["output_tokens"],
-                    usage["total_tokens"],
-                )
-                if usage["total_tokens"] >= MAX_DAILY_OPENAI_TOKEN_LIMIT:
-                    logger.error(f"Token usage exceeded limit ({MAX_DAILY_OPENAI_TOKEN_LIMIT}). Aborting experiment.")
+                # Loop for multiple runs
+                for run_num in range(0, num_runs):
+                    if num_runs > 1:
+                        logger.info("========= Run %d/%d =========", run_num + 1, num_runs)
+                    
+                    experiment_label = f"{formatted_agent_name} - {scenario.get('app_name', scenario.get('scenario', 'Unknown App'))} - {scenario.get('fault_type', 'Unknown Fault')}"
+                    
+                    if num_runs > 1:
+                        experiment_label += f" (Run {run_num + 1}/{num_runs})"
+                    
                     if enable_notifications and telegram_notifier:
                         try:
                             telegram_notifier.send_telegram_message(
-                                "❌ Experiment aborted mid-run: token usage exceeded budget."
+                                f"🧪 Starting experiment '{experiment_label}' ({agent_id})"
                             )
                         except Exception as exc:  # pragma: no cover
-                            logger.warning("Failed to send Telegram budget warning: %s", exc)
-                    sys.exit(1)
+                            logger.warning("Failed to send Telegram experiment start message: %s", exc)
 
-                enriched_result, output_file_path = asyncio.run(
-                    run_experiment(
-                        agent_id = agent_id,
-                        fault_scenario=scenario,
-                        agent_configuration_name=formatted_agent_name,
-                        batch_name=batch_dir_name,
-                        run_sre_agent_func=run_sre_agent,
-                        export_json_results_func=export_json_results,
-                        evaluation_func=evaluate_experiment,
-                        results_group_dir=results_group_path,
-                        prompts_config=prompts_config
+                    overrides_to_log = {
+                        key: agent_conf[key]
+                        for key in ("MAX_TOOL_CALLS", "RCA_TASKS_PER_ITERATION")
+                        if key in agent_conf
+                    }
+
+                    if overrides_to_log:
+                        logger.info("Applying overrides: %s", overrides_to_log)
+                    else:
+                        logger.info("No overrides specified; using existing runtime settings.")
+
+                    apply_config_overrides(agent_conf)
+
+                    usage = get_today_model_usage(model_name="gpt-5-mini")
+
+                    logger.info(
+                        "Current token usage (gpt-5-mini) before run: input=%d, output=%d, total=%d",
+                        usage["input_tokens"],
+                        usage["output_tokens"],
+                        usage["total_tokens"],
                     )
-                )
+                    if usage["total_tokens"] >= MAX_DAILY_OPENAI_TOKEN_LIMIT:
+                        logger.error(f"Token usage exceeded limit ({MAX_DAILY_OPENAI_TOKEN_LIMIT}). Aborting experiment.")
+                        if enable_notifications and telegram_notifier:
+                            try:
+                                telegram_notifier.send_telegram_message(
+                                    "❌ Experiment aborted mid-run: token usage exceeded budget."
+                                )
+                            except Exception as exc:  # pragma: no cover
+                                logger.warning("Failed to send Telegram budget warning: %s", exc)
+                        sys.exit(1)
 
-                logger.info(
-                    "Completed agent configuration %s (%d/%d) for scenario '%s'",
-                    agent_id,
-                    config_idx,
-                    total_configs,
-                    scenario.get("scenario", "Unknown Scenario"),
-                )
-
-                if enable_notifications and telegram_notifier:
-                    try:
-                        final_report = enriched_result.get("final_report", {}) if isinstance(enriched_result, dict) else {}
-                        root_cause = final_report.get("root_cause", "Unknown root cause")
-                        detection = final_report.get("detection", False)
-                        localization = final_report.get("localization", [])
-                        stats = enriched_result.get("stats", {}) if isinstance(enriched_result, dict) else {}
-                        total_tokens = stats.get("total_tokens", "N/A")
-                        exec_seconds = stats.get("execution_time_seconds", "N/A")
-                        langsmith_url = stats.get("langsmith_url", "N/A")
-                        
-                        # Format numeric fields safely
-                        exec_seconds_str = str(int(round(exec_seconds))) if isinstance(exec_seconds, (int, float)) else str(exec_seconds)
-                        total_tokens_str = str(int(round(total_tokens))) if isinstance(total_tokens, (int, float)) else str(total_tokens)
-                        
-                        # Format localization field (sorted, or indicate if empty)
-                        if localization:
-                            localization_str = ", ".join(sorted(localization))
-                        else:
-                            localization_str = "No problems detected" if not detection else "Unable to localize"
-                        
-                        telegram_notifier.send_telegram_message(
-                            "\n".join(
-                                [
-                                    f"✅ Experiment '{enriched_result.get('experiment_name', experiment_label)}' completed.",
-                                    f"Detection: {'✅ Yes' if detection else '❌ No'}",
-                                    f"Localization: {localization_str}",
-                                    f"Root cause: {root_cause}",
-                                    f"Execution time: {exec_seconds_str} seconds",
-                                    f"Total tokens: {total_tokens_str}",
-                                    f"LangSmith run: {langsmith_url}",
-                                ]
-                            )
+                    enriched_result, output_file_path = asyncio.run(
+                        run_experiment(
+                            agent_id = agent_id,
+                            fault_scenario=scenario,
+                            agent_configuration_name=formatted_agent_name,
+                            batch_name=batch_dir_name,
+                            run_sre_agent_func=run_sre_agent,
+                            export_json_results_func=export_json_results,
+                            evaluation_func=evaluate_experiment,
+                            results_group_dir=agent_results_dir,
+                            prompts_config=prompts_config,
+                            run_index=run_num,
+                            total_runs=num_runs
                         )
-                    except Exception as exc:  # pragma: no cover
-                        logger.warning("Failed to send Telegram experiment completion message: %s", exc)
+                    )
 
-                logger.info("Pausing briefly before launching the next experiment...")
-                time.sleep(10)
+                    logger.info(
+                        "Completed agent configuration %s run %d/%d for scenario '%s'",
+                        agent_id,
+                        run_num + 1,
+                        num_runs,
+                        scenario.get("scenario", "Unknown Scenario"),
+                    )
+
+                    if enable_notifications and telegram_notifier:
+                        try:
+                            final_report = enriched_result.get("final_report", {}) if isinstance(enriched_result, dict) else {}
+                            root_cause = final_report.get("root_cause", "Unknown root cause")
+                            detection = final_report.get("detection", False)
+                            localization = final_report.get("localization", [])
+                            stats = enriched_result.get("stats", {}) if isinstance(enriched_result, dict) else {}
+                            total_tokens = stats.get("total_tokens", "N/A")
+                            exec_seconds = stats.get("execution_time_seconds", "N/A")
+                            langsmith_url = stats.get("langsmith_url", "N/A")
+                            
+                            # Format numeric fields safely
+                            exec_seconds_str = str(int(round(exec_seconds))) if isinstance(exec_seconds, (int, float)) else str(exec_seconds)
+                            total_tokens_str = str(int(round(total_tokens))) if isinstance(total_tokens, (int, float)) else str(total_tokens)
+                            
+                            # Format localization field (sorted, or indicate if empty)
+                            if localization:
+                                localization_str = ", ".join(sorted(localization))
+                            else:
+                                localization_str = "No problems detected" if not detection else "Unable to localize"
+                            
+                            telegram_notifier.send_telegram_message(
+                                "\n".join(
+                                    [
+                                        f"✅ Experiment '{enriched_result.get('experiment_name', experiment_label)}' completed.",
+                                        f"Detection: {'✅ Yes' if detection else '❌ No'}",
+                                        f"Localization: {localization_str}",
+                                        f"Root cause: {root_cause}",
+                                        f"Execution time: {exec_seconds_str} seconds",
+                                        f"Total tokens: {total_tokens_str}",
+                                        f"LangSmith run: {langsmith_url}",
+                                    ]
+                                )
+                            )
+                        except Exception as exc:  # pragma: no cover
+                            logger.warning("Failed to send Telegram experiment completion message: %s", exc)
+
+                    logger.info("Pausing briefly before launching the next experiment...")
+                    time.sleep(10)
 
             logger.info(
                 "All %d agent configurations executed for scenario '%s' without recreating the cluster",
