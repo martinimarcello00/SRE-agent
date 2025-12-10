@@ -1,0 +1,362 @@
+{
+  "app_name": "Social Network",
+  "app_summary": "A social network with unidirectional follow relationships, implemented with loosely-coupled microservices, communicating with each other via Thrift RPCs. Supported Operations: Create text post (optional media: image, video, shortened URL, user tag), Read post, Read entire user timeline, Receive recommendations on which users to follow, Search database for user or post, Register/Login using user credentials, Follow/Unfollow user",
+  "target_namespace": "test-social-network",
+  "trace_service_starting_point": "nginx-web-server",
+  "problematic_pods": {
+    "problematic_pods": [],
+    "info": "No problematic pods detected based on status analysis. All pods appear healthy."
+  },
+  "slow_traces": {
+    "error": "The service nginx-web-server does not exist"
+  },
+  "problematic_metrics": {
+    "problematic_metrics": [],
+    "info": "All monitored metrics look healthy; no anomalous values detected."
+  },
+  "problematic_traces": {
+    "error": "The service nginx-web-server does not exist"
+  },
+  "symptoms": [
+    {
+      "potential_symptom": "service not found / missing (traces unavailable)",
+      "resource_type": "service",
+      "affected_resource": "nginx-web-server",
+      "evidence": "Slow traces retrieval error: 'The service nginx-web-server does not exist'. Error traces retrieval error: 'The service nginx-web-server does not exist'. No problematic pods detected and all pod metrics healthy, indicating the primary observable issue is that the service nginx-web-server cannot be found by the tracing system."
+    }
+  ],
+  "rca_tasks": [
+    {
+      "priority": 1,
+      "status": "in_progress",
+      "investigation_goal": "Confirm whether the Kubernetes Service object 'nginx-web-server' exists in namespace 'test-social-network' and surface its metadata/selectors/events. Hypothesis: the Service resource is deleted or mis-named, causing the tracing system to report 'service does not exist' (data_dependencies contains no valid mapped pods/services).",
+      "target_resource": "service/nginx-web-server (namespace: test-social-network)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "kubectl_get (service nginx-web-server -n test-social-network)",
+        "kubectl_describe (service/nginx-web-server -n test-social-network)"
+      ]
+    },
+    {
+      "priority": 2,
+      "status": "in_progress",
+      "investigation_goal": "Verify that the nginx-web-server Service selectors match pod labels and that Endpoints are populated (i.e., service -> pods mapping exists). Hypothesis: Service exists but selectors are wrong or endpoints are empty, so the service isn't being discovered/associated by the tracing indexer.",
+      "target_resource": "nginx-web-server endpoints / backing pods",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_pods_from_service (nginx-web-server, namespace: test-social-network)"
+      ]
+    },
+    {
+      "priority": 3,
+      "status": "pending",
+      "investigation_goal": "Inspect a representative nginx pod backing nginx-web-server for tracing instrumentation, exported service name tag, env vars and startup logs. Hypothesis: nginx process or sidecar is not emitting spans or is emitting with an incorrect service.name (e.g., different than 'nginx-web-server'), so the tracing UI cannot find that service.",
+      "target_resource": "one nginx pod from service nginx-web-server (namespace: test-social-network)",
+      "resource_type": "pod",
+      "suggested_tools": [
+        "kubectl_describe (pod <choose one from get_pods_from_service>)",
+        "get_logs (pod <same pod>, recent startup/runtime logs)"
+      ]
+    },
+    {
+      "priority": 4,
+      "status": "pending",
+      "investigation_goal": "Two-sided connection check between nginx instrumentation and the tracing collector: verify the pod's configured exporter/collector URL (env/annotations) AND verify a tracing collector service exists in-cluster with the matching hostname/port. Hypothesis: nginx is configured to send to a collector name/port that does not exist (typo or wrong namespace/port), so spans are dropped and the tracing UI shows 'service does not exist'.",
+      "target_resource": "connection: nginx-web-server (pod env/annotations) <-> tracing collector service (namespace)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "kubectl_describe (pod <nginx pod> to read env/annotations for collector URL)",
+        "kubectl_get (services -n test-social-network)  -- to locate tracing collector (jaeger/otel/zipkin) and check ports"
+      ]
+    },
+    {
+      "priority": 5,
+      "status": "pending",
+      "investigation_goal": "Validate tracing backend health and global service indexing: discover tracing infra components and inspect their pods/services. Also confirm other services are present in the tracing backend (sanity). Hypothesis: tracing backend (collector/query) is unhealthy or misconfigured cluster-wide causing lookup failures for service names.",
+      "target_resource": "tracing backend (collector / query) discovered in cluster",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_dependencies (to enumerate infra/tracing components)",
+        "kubectl_get (pods/services for the discovered tracing component(s) -n <their namespace>)"
+      ]
+    }
+  ],
+  "rca_analyses_list": [
+    {
+      "diagnosis": "Kubernetes Service 'nginx-web-server' in namespace 'test-social-network' does NOT exist (resource deleted or misnamed).",
+      "reasoning": "Both targeted queries returned NotFound: 'kubectl_get service nginx-web-server -n test-social-network' returned \"Resource service/nginx-web-server not found\" and 'kubectl_describe service nginx-web-server -n test-social-network' returned the same NotFound error. These two independent tool results confirm the Service resource is absent, which explains the tracing system reporting no mapped pods/services for this service.",
+      "task": {
+        "priority": 1,
+        "status": "completed",
+        "investigation_goal": "Confirm whether the Kubernetes Service object 'nginx-web-server' exists in namespace 'test-social-network' and surface its metadata/selectors/events. Hypothesis: the Service resource is deleted or mis-named, causing the tracing system to report 'service does not exist' (data_dependencies contains no valid mapped pods/services).",
+        "target_resource": "service/nginx-web-server (namespace: test-social-network)",
+        "resource_type": "service",
+        "suggested_tools": [
+          "kubectl_get (service nginx-web-server -n test-social-network)",
+          "kubectl_describe (service/nginx-web-server -n test-social-network)"
+        ]
+      },
+      "insights": [
+        "Kubernetes Service 'nginx-web-server' in namespace 'test-social-network' does NOT exist: both kubectl_get and kubectl_describe returned \"Resource service/nginx-web-server not found\".",
+        "The absence of the Service indicates it was deleted or misnamed; this absence explains the tracing/observability system reporting no mapped pods/services for that service.",
+        "Two independent kubectl operations produced the NotFound result, corroborating the resource absence and making transient API errors or client-side parsing issues less likely."
+      ],
+      "steps_performed": [
+        "Checked Service 'nginx-web-server' in namespace 'test-social-network' using kubectl_get (output: yaml)",
+        "Checked Service 'nginx-web-server' in namespace 'test-social-network' using kubectl_describe",
+        "Submitted final diagnosis using submit_final_diagnosis"
+      ],
+      "tools_stats": {
+        "kubectl_get": 1,
+        "kubectl_describe": 1,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis for kubectl_get: If the Service nginx-web-server is deleted or misnamed, kubectl_get will return a \"NotFound\" error; if it exists, kubectl_get (yaml) will show its metadata (name, labels, selectors, cluster IP, ports) confirming presence.\n\nI'll run kubectl_get for the service in the test-social-network namespace and request YAML output.",
+          "tool_calls": [
+            {
+              "name": "kubectl_get",
+              "args": {
+                "resourceType": "service",
+                "name": "nginx-web-server",
+                "namespace": "test-social-network",
+                "output": "yaml"
+              },
+              "id": "call_AcgnQ9hcOMTvDLM0AD1ADPya",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Error: ToolException('{\\n  \"error\": \"Resource service/nginx-web-server not found\",\\n  \"status\": \"not_found\"\\n}')\n Please fix your mistakes."
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis for kubectl_describe: If the Service resource is deleted or misnamed, kubectl_describe will return a \"NotFound\" error and no Events; if it exists but has issues, describe will show metadata, selector, endpoints, and recent events. I'll run kubectl_describe for the service in test-social-network.",
+          "tool_calls": [
+            {
+              "name": "kubectl_describe",
+              "args": {
+                "resourceType": "service",
+                "name": "nginx-web-server",
+                "namespace": "test-social-network"
+              },
+              "id": "call_4XllawTEPN1JVVE3ahcRPj1q",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Error: ToolException('{\\n  \"error\": \"Resource service/nginx-web-server not found\",\\n  \"status\": \"not_found\"\\n}')\n Please fix your mistakes."
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "Kubernetes Service 'nginx-web-server' in namespace 'test-social-network' does NOT exist (resource deleted or misnamed).",
+                "reasoning": "Both targeted queries returned NotFound: 'kubectl_get service nginx-web-server -n test-social-network' returned \"Resource service/nginx-web-server not found\" and 'kubectl_describe service nginx-web-server -n test-social-network' returned the same NotFound error. These two independent tool results confirm the Service resource is absent, which explains the tracing system reporting no mapped pods/services for this service."
+              },
+              "id": "call_kqHL82XE8PyMIArqL3N7Dx5d",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    },
+    {
+      "diagnosis": "The Service 'nginx-web-server' is absent from the 'test-social-network' namespace, so there are no selectors or Endpoints populated (no service->pod mapping).",
+      "reasoning": "get_pods_from_service returned an error: \"The service nginx-web-server does not exist in the test-social-network namespace\" and returned an empty pods list. A separate kubectl_get listing of services in namespace 'test-social-network' did not include 'nginx-web-server' (services listed include 'nginx-thrift' but not 'nginx-web-server'). These two independent findings confirm the service is missing and therefore cannot have matching selectors or endpoints.",
+      "task": {
+        "priority": 2,
+        "status": "completed",
+        "investigation_goal": "Verify that the nginx-web-server Service selectors match pod labels and that Endpoints are populated (i.e., service -> pods mapping exists). Hypothesis: Service exists but selectors are wrong or endpoints are empty, so the service isn't being discovered/associated by the tracing indexer.",
+        "target_resource": "nginx-web-server endpoints / backing pods",
+        "resource_type": "service",
+        "suggested_tools": [
+          "get_pods_from_service (nginx-web-server, namespace: test-social-network)"
+        ]
+      },
+      "insights": [
+        "The Service 'nginx-web-server' does not exist in the 'test-social-network' namespace (confirmed by get_pods_from_service error and kubectl_get service listing).",
+        "Because the Service resource is missing, there are no selectors or Endpoints for it \u2014 therefore no service-to-pod mapping can exist and requests to that service will fail.",
+        "No evidence was found of pod failures or selector mismatches: the root cause is the absent Service resource itself rather than underlying pod or networking failures.",
+        "The services listing includes 'nginx-thrift' but not 'nginx-web-server', indicating possible naming confusion or that the expected Service was never created or was deleted.",
+        "Final diagnosis (submitted): the missing 'nginx-web-server' Service in namespace 'test-social-network' is the root cause of the observed issue."
+      ],
+      "steps_performed": [
+        "Analyzed hypothesis that the Service 'nginx-web-server' in namespace 'test-social-network' has no backing pods/endpoints due to selector mismatch or wrong namespace",
+        "Checked pods for service 'nginx-web-server' using get_pods_from_service",
+        "Analyzed response from get_pods_from_service (returned empty pods list and error: \"The service nginx-web-server does not exist in the test-social-network namespace\")",
+        "Analyzed hypothesis that the service is absent and decided to list services in the namespace",
+        "Checked services in namespace 'test-social-network' using kubectl_get",
+        "Analyzed kubectl_get output and confirmed 'nginx-web-server' is not present in the service list (noting 'nginx-thrift' exists)",
+        "Correlated data from get_pods_from_service and kubectl_get to validate absence of the service",
+        "Submitted final diagnosis using submit_final_diagnosis"
+      ],
+      "tools_stats": {
+        "get_pods_from_service": 1,
+        "kubectl_get": 1,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis: The nginx-web-server Service in namespace \"test-social-network\" has no backing pods/endpoints because its selectors do not match any pod labels (or the service is in a different namespace); calling get_pods_from_service will show either an empty list (supporting the hypothesis) or a non-empty list (ruling it out). I'll query the pods associated with the service name \"nginx-web-server\".",
+          "tool_calls": [
+            {
+              "name": "get_pods_from_service",
+              "args": {
+                "service_name": "nginx-web-server"
+              },
+              "id": "call_l3L7fkrgR5cvFqMIUiPWjoyC",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n  \"service_name\": \"nginx-web-server\",\n  \"namespace\": \"test-social-network\",\n  \"pods\": [],\n  \"error\": \"The service nginx-web-server does not exist in the test-social-network namespace.\"\n}"
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis: The \"nginx-web-server\" Service is absent from the \"test-social-network\" namespace; listing all Services in that namespace will confirm it's not present. I'll list services in namespace test-social-network.",
+          "tool_calls": [
+            {
+              "name": "kubectl_get",
+              "args": {
+                "resourceType": "services",
+                "name": "",
+                "namespace": "test-social-network",
+                "output": "json"
+              },
+              "id": "call_xi08alensl7mAZlpvjgIHR06",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n  \"items\": [\n    {\n      \"name\": \"compose-post-service\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"home-timeline-redis\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"home-timeline-service\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"jaeger\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"NodePort\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"media-frontend\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"media-memcached\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"media-mongodb\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"media-service\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"nginx-thrift\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"post-storage-memcached\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"post-storage-mongodb\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"post-storage-service\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"social-graph-mongodb\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"social-graph-redis\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"social-graph-service\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"text-service\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"unique-id-service\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"url-shorten-memcached\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"url-shorten-mongodb\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"url-shorten-service\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"user-memcached\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"user-mention-service\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"user-mongodb\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"user-service\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"user-timeline-mongodb\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"user-timeline-redis\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    },\n    {\n      \"name\": \"user-timeline-service\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Service\",\n      \"status\": \"ClusterIP\",\n      \"createdAt\": \"2025-12-04T15:17:23Z\"\n    }\n  ]\n}"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "The Service 'nginx-web-server' is absent from the 'test-social-network' namespace, so there are no selectors or Endpoints populated (no service->pod mapping).",
+                "reasoning": "get_pods_from_service returned an error: \"The service nginx-web-server does not exist in the test-social-network namespace\" and returned an empty pods list. A separate kubectl_get listing of services in namespace 'test-social-network' did not include 'nginx-web-server' (services listed include 'nginx-thrift' but not 'nginx-web-server'). These two independent findings confirm the service is missing and therefore cannot have matching selectors or endpoints."
+              },
+              "id": "call_Iz3Uw7okzQOjLirHJoebptbk",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    }
+  ],
+  "tasks_to_be_executed": [],
+  "final_report": {
+    "root_cause": "The Kubernetes Service resource nginx-web-server in namespace test-social-network is absent (deleted or misnamed). Because the Service object does not exist, there are no selectors or Endpoints to map the service name to any pods, so the tracing/indexer and trace-query UI report 'The service nginx-web-server does not exist' and cannot retrieve traces for that service.",
+    "affected_resources": [
+      "Service: nginx-web-server (namespace: test-social-network) \u2014 MISSING (root cause)",
+      "Tracing/indexer/query component(s) that attempted to resolve service 'nginx-web-server' (observability lookup failures)",
+      "Span lookups / trace retrievals for service 'nginx-web-server' (returned 'service does not exist')",
+      "Application nginx pods that would otherwise be selected by the Service (exist but are not discoverable via the missing Service; observed pod metrics healthy)",
+      "Services list in namespace test-social-network (presence of 'nginx-thrift' highlights possible naming confusion)"
+    ],
+    "evidence_summary": "Priority-1 and Priority-2 investigations independently confirmed the absence of the Service resource: 'kubectl_get service nginx-web-server -n test-social-network' and 'kubectl_describe service nginx-web-server -n test-social-network' both returned NotFound. get_pods_from_service returned an error stating the service does not exist and returned an empty pod list. A namespace service listing showed 'nginx-thrift' but not 'nginx-web-server'. No pod crashes or pod-metric anomalies were observed, indicating the problem is the missing Service resource rather than pod health or networking.",
+    "investigation_summary": "Investigations prioritized the Service existence and service->pod mapping. Priority #1: Verified the Service 'nginx-web-server' does not exist (kubectl_get/describe -> NotFound). Priority #2: Confirmed there are no Endpoints or backing pods because the Service is absent (get_pods_from_service returned error and namespace service listing did not include nginx-web-server). No evidence of selector mismatch or pod failures was found. Based on these independent checks, the observable symptom (traces unavailable; 'service does not exist') is fully explained by the missing Service resource. There is no need to inspect pod logs or collector connectivity to explain the trace UI's 'service does not exist' message.",
+    "detection": true,
+    "localization": [
+      "nginx-web-server (Service, namespace: test-social-network)"
+    ]
+  },
+  "prompts_config": {
+    "triage_agent": "You are an expert Site Reliability Engineer. Your mission is to triage a Kubernetes application by analyzing the provided data.\n\nYour analysis must adhere to the following rules:\n1.  **Focus**: Identify symptoms at the **pod or service level only**. Do not provide cluster-wide analysis or generalizations.\n2.  **Aggregation**: For each pod or service that has issues, create **at most one symptom entry**. Aggregate all related evidence (from pods, metrics, traces) into that single entry.\n3.  **Action**: Synthesize the information to identify and list potential symptoms. For each symptom, pinpoint the affected resource (pod or service) and cite the specific evidence.\n4.  **Resource Naming**: In the `affected_resource` field, provide ONLY the exact resource name without any decorators, prefixes, or namespace qualifiers (e.g., use \"geo-6b4b89b5f5-rsrh7\" NOT \"test-hotel-reservation/geo-6b4b89b5f5-rsrh7\").\n5.  **Trace-Only Evidence**: If error traces are the only signals, still produce symptoms by identifying the service (or pod) that owns the failing span and summarizing the suspected issue using the trace error message. Avoid generic \"trace failed\" statements\u2014make the hypothesis explicit (e.g., \"checkout-service may have invalid credentials because trace X shows `401 Unauthorized` calling payment-service\").\n6.  **Empty State**: If the provided data contains no issues, it is correct to return an empty list of symptoms.",
+    "planner_agent": "\nYou are an expert Site Reliability Engineer. Produce a concise, de-duplicated investigation plan where each task inspects a precise part of the infrastructure to surface the most likely root-cause signals and converge on the true RCA quickly.\n\n**Toolkit**\n- `kubectl_get`: list Kubernetes resources and their status\n- `kubectl_describe`: inspect detailed spec/events for a resource\n- `get_pods_from_service`: map services to backing pods\n- `get_cluster_pods_and_services`: snapshot cluster topology\n- `get_logs`: retrieve recent pod or service logs\n- `get_traces`: fetch traces filtered by latency/errors\n- `get_trace`: inspect a single trace end-to-end\n- `get_metrics`: read current CPU/memory/network metrics\n- `get_metrics_range`: compare historical metric windows\n- `get_services_used_by`: discover downstream service calls\n- `get_dependencies`: enumerate external/infra dependencies\n\n**Planning Rules**\n1. For every symptom, classify the dominant failure domain (app, latency, dependency/config, or platform) and craft a single, testable hypothesis per resource.\n2. Use the `data_dependencies` and `infra_dependencies` JSON to ground every hypothesis. Merge overlapping symptoms into one task per resource.\n3. **Connections (non-negotiable):** Always create at least one task that inspects the connection between every pair of affected resources or the epicenter and its downstream dependents. These tasks must perform explicit two-sided checks (e.g., verify `service-a`'s config for `service-b`'s URL **and** inspect `service-b`'s Kubernetes service definition for the matching port/name) to catch login/URL/port misconfigurations.\n\n**Tool Selection**\n- Pick the minimum tool set (ideally one or two calls) needed to prove or disprove the hypothesis. Over-broad tool lists are rejected.\n\n**Priority Policy**\n- Assign unique priorities (1..N).\n- Priority 1 is the most direct epicenter investigation. Immediately after that, schedule the connection-check tasks described above; treat them as top-tier because they frequently surface misconfigurations.\n- Remaining priorities should rank other high-impact hypotheses (shared dependencies, severe crashes) ahead of narrow or low-scope checks.\n",
+    "rca_agent": "\nYou are an expert DevOps engineer performing focused Root Cause Analysis on a Kubernetes service.\n\nInstructions:\n1. Use ONLY the Priority Tools provided in the task. Do not propose or use tools outside this list.\n2. For each tool call, first formulate a clear, testable hypothesis about a possible root cause that can be answered by the result. Avoid broad or exploratory queries.\n3. Each tool call must provide unique, non-overlapping information. Never repeat requests with similar parameters or investigate the same aspect repeatedly in slightly different ways.\n4. Stop investigating, even if you have not reached the budget limit, when you have:\n   - Clear evidence that directly identifies a root cause (or definitively rules one out)\n   - Multiple data points indicating the same failure/cause\n   - Sufficient information to answer the investigation goal\n5. DO NOT:\n   - Repeat or re-run tools unless you are testing a truly new and justified hypothesis\n   - Query outside the given Target or Priority Tools\n   - Investigate unrelated resources or expand scope\n6. When you have gathered sufficient, non-redundant evidence (typically after 2-3 targeted tool calls), call submit_final_diagnosis with:\n   - diagnosis: State the precise root cause as it pertains to the investigation goal\n   - reasoning: Support your diagnosis by referencing unique findings from your tool calls\n\nREMEMBER: Quality over quantity. Focus on unique and conclusive findings rather than exhaustive or repetitive investigation.\n",
+    "supervisor_agent": "You are an expert Site Reliability Engineer analyzing RCA findings to determine the root cause of an incident.\n\nAnalyze all symptoms and investigation findings to:\n1. Identify patterns and correlations across findings\n2. Determine the primary root cause\n3. List all affected resources\n4. Summarize key evidence\n\n**Understanding Task Priority:**\nEach RCA investigation task has been assigned a priority level:\n- Priority 1 = Most important / Most likely to reveal root cause (investigated first)\n- Priority 2, 3, ... = Progressively lower importance\n- Tasks with lower priority numbers should generally have higher weight in your analysis\n- The priority reflects the likelihood that investigating that task/resource would uncover the root cause\n\nUse the priority information to contextualize findings: results from priority 1 tasks are typically more significant for determining root cause than lower priority investigations.\n\n**Detection & Localization Requirements:**\n- **detection**: Set to `true` if any problem/anomaly was detected in the cluster based on the evidence. Set to `false` only if no issues are found.\n- **localization**: Provide a list of ONLY the faulty/problematic components (service names or pod names) directly identified as the root cause. This should be a minimal, precise list - extract ONLY the specific resource(s) that caused the incident, not all affected resources.\n  - Example: If a service \"user-service\" has a misconfiguration causing downstream failures, localization = [\"user-service\"]\n  - Example: If a pod \"database-pod-xyz\" is failing, localization = [\"database-pod-xyz\"]\n  - Leave empty/null if the root cause cannot be localized to a specific service or pod.\n\n**Root Cause Expectations:**\n- Build a causal chain that connects symptoms, investigation evidence, and the precise failure mechanism\n- Cite concrete configuration or runtime details (e.g., \"service expects port 5432 but database listens on 5433\") when diagnosing misconfigurations or integration issues\n- If evidence stops at the symptom level, identify the missing proof and pursue it before finalizing\n\n**Strict Iteration Policy:**\nOnly request another RCA iteration when the existing evidence is insufficient to produce a confident final diagnosis. Never re-run or re-request tasks already marked as completed or currently in progress. When additional work is unavoidable, list only the minimal set of pending task priorities in `tasks_to_be_executed` and clearly justify why each is required. If the current findings support a solid root cause, leave `tasks_to_be_executed` empty and finalize the report.\n\nWhen you need more evidence, ask for the most targeted pending tasks that can close the causal gap (for example, verifying port mappings, credentials, or configuration values at both ends of a failing connection).\n\nProvide a clear, specific root cause statement that explains what caused the incident and why it happened now."
+  },
+  "experiment_name": "A - Plain React P2 B7 - Social Network - Port misconfig post-storage (social-network-plain-react)",
+  "agent_id": "A",
+  "agent_configuration_name": "A - Plain React P2 B7",
+  "stats": {
+    "run_id": "8253170d-325f-452f-b04d-4ed7e40f82e6",
+    "experiment_name": "A - Plain React P2 B7 - Social Network - Port misconfig post-storage (social-network-plain-react)",
+    "status": "success",
+    "execution_time_seconds": 184.866144,
+    "total_tokens": 34642,
+    "total_cost": 0.021324,
+    "langsmith_url": "https://smith.langchain.com/o/abfc6d67-41f7-486b-956b-7589404f3bd1/projects/p/2264bd80-45a8-4ab7-b5b3-23b64980ca6f/r/8253170d-325f-452f-b04d-4ed7e40f82e6?trace_id=8253170d-325f-452f-b04d-4ed7e40f82e6&start_time=2025-12-04T15:21:05.018159",
+    "agent_stats": {
+      "supervisor_agent": {
+        "total_tokens": 4832,
+        "input_tokens": 3067,
+        "output_tokens": 1765,
+        "cost": 0.00353,
+        "runs_count": 1
+      },
+      "rca_agent": {
+        "total_tokens": 22794,
+        "input_tokens": 18299,
+        "output_tokens": 4495,
+        "cost": 0.00899,
+        "runs_count": 2
+      },
+      "schedule_rca_tasks": {
+        "total_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost": 0.0,
+        "runs_count": 1
+      },
+      "planner_agent": {
+        "total_tokens": 5615,
+        "input_tokens": 1901,
+        "output_tokens": 3714,
+        "cost": 0.007428,
+        "runs_count": 1
+      },
+      "triage_agent": {
+        "total_tokens": 1401,
+        "input_tokens": 713,
+        "output_tokens": 688,
+        "cost": 0.001376,
+        "runs_count": 1
+      }
+    }
+  },
+  "testbed": {
+    "application_name": [
+      "Social Network"
+    ],
+    "fault_name": "Port misconfig post-storage",
+    "target_namespace": "test-social-network",
+    "trace_service_starting_point": "nginx-web-server",
+    "rca_tasks_per_iteration": "2",
+    "max_tool_calls": "7"
+  },
+  "evaluation": {
+    "detection": true,
+    "localization": false,
+    "rca_score": 1,
+    "rca_motivation": "The analysis focuses on a missing nginx-web-server Service, while the ground truth is a misconfigured targetPort on post-storage-service; it identifies the wrong component and cause entirely."
+  }
+}
