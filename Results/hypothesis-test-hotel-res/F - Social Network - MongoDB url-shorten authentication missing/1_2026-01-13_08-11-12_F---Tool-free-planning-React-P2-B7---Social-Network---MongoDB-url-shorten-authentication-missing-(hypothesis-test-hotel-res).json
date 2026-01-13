@@ -1,0 +1,393 @@
+{
+  "app_name": "Social Network",
+  "app_summary": "A social network with unidirectional follow relationships, implemented with loosely-coupled microservices, communicating with each other via Thrift RPCs. Supported Operations: Create text post (optional media: image, video, shortened URL, user tag), Read post, Read entire user timeline, Receive recommendations on which users to follow, Search database for user or post, Register/Login using user credentials, Follow/Unfollow user",
+  "target_namespace": "test-social-network",
+  "trace_service_starting_point": "nginx-thrift",
+  "problematic_pods": {
+    "problematic_pods": [
+      {
+        "pod_name": "url-shorten-mongodb-d57db69c5-v22kc",
+        "namespace": "test-social-network",
+        "pod_phase": "Running",
+        "container_issues": [
+          {
+            "container_name": "url-shorten-mongodb",
+            "issue_type": "Waiting",
+            "reason": "CrashLoopBackOff",
+            "message": "back-off 5m0s restarting failed container=url-shorten-mongodb pod=url-shorten-mongodb-d57db69c5-v22kc_test-social-network(a685ed3f-4dfc-4f8f-aaf9-5db4abf9a7fa)",
+            "restart_count": 6
+          }
+        ]
+      }
+    ]
+  },
+  "slow_traces": {
+    "service": "nginx-thrift",
+    "traces": [],
+    "info": "No traces found for service 'nginx-thrift' with a minimum duration of 2000ms in the last 15m."
+  },
+  "problematic_metrics": {
+    "problematic_metrics": [],
+    "info": "All monitored metrics look healthy; no anomalous values detected."
+  },
+  "problematic_traces": {
+    "service": "nginx-thrift",
+    "traces": [],
+    "info": "No traces found for service 'nginx-thrift' with lookback '15m'."
+  },
+  "symptoms": [
+    {
+      "potential_symptom": "Container repeatedly crashing and restarting (CrashLoopBackOff)",
+      "resource_type": "pod",
+      "affected_resource": "url-shorten-mongodb-d57db69c5-v22kc",
+      "evidence": "Container url-shorten-mongodb is in Waiting state with reason 'CrashLoopBackOff' and message 'back-off 5m0s restarting failed container=url-shorten-mongodb pod=url-shorten-mongodb-d57db69c5-v22kc_test-social-network(...)'; restart_count=6. Monitored pod metrics show no anomalous values; no error or slow traces relevant to this pod were found."
+    }
+  ],
+  "rca_tasks": [
+    {
+      "priority": 1,
+      "status": "in_progress",
+      "investigation_goal": "Domain: dependency/config. Testable hypothesis: the container process is exiting on startup (non-zero exit code) due to a startup check or missing configuration (e.g., expects a cluster/service or config that is absent). Actionable checks: kubectl describe pod and events to get last termination message and exit code; kubectl logs --previous for the container to capture startup errors; inspect pod.spec for env vars, args, command, image, volumeMounts, and probes to narrow cause. Note: data_dependencies JSON contains the text \"The service url-shorten-mongodb doesn't exist in the cluster.\" Use logs/events to confirm whether the container is failing because it cannot discover an expected service or configuration.",
+      "target_resource": "url-shorten-mongodb-d57db69c5-v22kc",
+      "resource_type": "pod",
+      "suggested_tools": [
+        "kubectl"
+      ]
+    },
+    {
+      "priority": 2,
+      "status": "in_progress",
+      "investigation_goal": "Connection check (two-sided) between the pod and the Kubernetes Service that the container expects. Testable hypothesis: the container expects a Service named 'url-shorten-mongodb' (or similar) but that Service is missing/misnamed or its ports/selectors do not match the pod, causing startup/replica discovery failures. Actionable checks (both sides): 1) Inspect the pod spec (env vars, args, SD/replica-set configs, DNS names) for any reference to service name(s) or ports. 2) kubectl get service url-shorten-mongodb -n test-social-network; if exists, describe its spec (type, ports, selector, clusterIP/headless) and verify selectors match the pod labels and port names/numbers match containerPort. If the Service does not exist, record that and link to the garbled data_dependencies noting the same message.",
+      "target_resource": "Service/url-shorten-mongodb",
+      "resource_type": "service",
+      "suggested_tools": [
+        "kubectl"
+      ]
+    },
+    {
+      "priority": 3,
+      "status": "pending",
+      "investigation_goal": "Connection check (two-sided) between the pod and any PersistentVolumeClaim(s) / volumes it mounts. Testable hypothesis: the MongoDB container fails to start because a referenced PVC is missing, unbound, or has permission/mount issues (e.g., wrong access mode or root-owned data directory). Actionable checks: 1) Inspect pod.spec.volumes and volumeMounts for claimName(s) and mount paths. 2) kubectl get pvc -n test-social-network <claimName> and describe to confirm Bound state, PV, accessModes and capacity. 3) If PVC is Bound, inspect PV and storage class for access restrictions. 4) From a node or debug pod, inspect filesystem permissions on the PV mount (if possible) or check init/container logs for permission errors.",
+      "target_resource": "url-shorten-mongodb-d57db69c5-v22kc (PVCs/volumes)",
+      "resource_type": "pod",
+      "suggested_tools": [
+        "kubectl"
+      ]
+    },
+    {
+      "priority": 4,
+      "status": "pending",
+      "investigation_goal": "Pod-level configuration check: Testable hypothesis: the container image, entrypoint/command, or liveness/readiness probes are misconfigured (wrong command/args or probe causing immediate kill) causing CrashLoopBackOff. Actionable checks: 1) kubectl get pod -o yaml to capture image:tag, command, args, and probe configs. 2) Check events for ImagePullBackOff, ErrImagePull, OOMKilled or failed liveness probe messages. 3) If image looks suspicious, compare with intended image tag in deployment/statefulset. This is a narrow but high-impact check if startup scripts or probes are wrong.",
+      "target_resource": "url-shorten-mongodb-d57db69c5-v22kc",
+      "resource_type": "pod",
+      "suggested_tools": [
+        "kubectl"
+      ]
+    }
+  ],
+  "rca_analyses_list": [
+    {
+      "diagnosis": "The MongoDB container (pod url-shorten-mongodb-d57db69c5-v22kc) is crashing on startup because the mounted TLS certificate is invalid (expired or not yet valid), causing MongoDB to fail with a fatal SSL assertion and exit (Exit Code 14) leading to CrashLoopBackOff.",
+      "reasoning": "kubectl describe pod shows container in CrashLoopBackOff with Last State Terminated: Exit Code 14 and mounts include a tls-cert secret. Pod events indicate repeated restarts. Container logs contain the decisive error: \"The provided SSL certificate is expired or not yet valid.\" followed by a fatal assertion and abort. These two unique data points (exit code + TLS secret mount from pod describe, and the SSL fatal error from logs) directly identify the invalid TLS certificate as the root cause.",
+      "task": {
+        "priority": 1,
+        "status": "completed",
+        "investigation_goal": "Domain: dependency/config. Testable hypothesis: the container process is exiting on startup (non-zero exit code) due to a startup check or missing configuration (e.g., expects a cluster/service or config that is absent). Actionable checks: kubectl describe pod and events to get last termination message and exit code; kubectl logs --previous for the container to capture startup errors; inspect pod.spec for env vars, args, command, image, volumeMounts, and probes to narrow cause. Note: data_dependencies JSON contains the text \"The service url-shorten-mongodb doesn't exist in the cluster.\" Use logs/events to confirm whether the container is failing because it cannot discover an expected service or configuration.",
+        "target_resource": "url-shorten-mongodb-d57db69c5-v22kc",
+        "resource_type": "pod",
+        "suggested_tools": [
+          "kubectl"
+        ]
+      },
+      "insights": [
+        "Pod url-shorten-mongodb-d57db69c5-v22kc is in CrashLoopBackOff with Last State Terminated (Exit Code 14) and multiple restarts \u2014 pod events show repeated BackOff restarts while image pulls and container creation/start succeed",
+        "Container logs contain a fatal MongoDB SSL error: \"The provided SSL certificate is expired or not yet valid.\" followed by a fatal assertion and abort \u2014 this is the immediate cause of the process exit",
+        "A tls-cert Secret (SecretName: mongodb-tls) is mounted into the pod (volume tls-cert -> /etc/tls), so the invalid TLS certificate originates from the mounted secret used by MongoDB",
+        "There is a mounted ConfigMap providing mongod.conf, but there is no evidence in the logs or describe output that the config file is the failure cause \u2014 the logs point specifically to TLS certificate validity",
+        "Correlated evidence (Exit Code 14 + fatal SSL assertion in logs + mounted TLS secret) indicates the root cause is an invalid/expired (or not yet valid) TLS certificate in the mongodb-tls secret, causing MongoDB to abort on startup",
+        "Hypothesis that the issue was a missing dependency/config was disproven; hypothesis that logs would show a MongoDB startup/TLS error was confirmed",
+        "Impact: MongoDB pod fails to become Ready and repeatedly restarts (CrashLoopBackOff), causing the MongoDB service in the test-social-network namespace to be unavailable until the TLS certificate in the secret is renewed/fixed"
+      ],
+      "steps_performed": [
+        "Formulated hypothesis that the pod is failing on startup and that kubectl describe/events will show a recent container termination, non-zero exit code, and events pointing to a missing dependency or configuration",
+        "Checked pod url-shorten-mongodb-d57db69c5-v22kc using kubectl_describe",
+        "Analyzed container state, last termination reason/exit code, restart count, pod events, and mounted volumes from the pod description",
+        "Formulated hypothesis that the container logs would contain a MongoDB startup error (e.g., config or TLS certificate issue) explaining Exit Code 14",
+        "Checked container logs for url-shorten-mongodb-d57db69c5-v22kc using get_logs",
+        "Analyzed container logs and identified an SSL/TLS fatal assertion message indicating the provided certificate is expired or not yet valid",
+        "Correlated data from kubectl_describe and get_logs to link the mounted tls-cert secret to the TLS error observed in logs",
+        "Submitted final diagnosis using submit_final_diagnosis"
+      ],
+      "tools_stats": {
+        "kubectl_describe": 1,
+        "get_logs": 1,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 1: The pod is failing on startup and the Pod's describe/events will show a recent container termination (non-zero exit code) and events (CrashLoopBackOff or failed probe) that include a message or reason pointing to a missing dependency or configuration.\n\nI'll describe the pod to capture container status, last termination message, exit code, and recent events.",
+          "tool_calls": [
+            {
+              "name": "kubectl_describe",
+              "args": {
+                "resourceType": "pods",
+                "name": "url-shorten-mongodb-d57db69c5-v22kc",
+                "namespace": "test-social-network"
+              },
+              "id": "call_katC8VWWHInNmZU6UXxSqKNE",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Name:             url-shorten-mongodb-d57db69c5-v22kc\nNamespace:        test-social-network\nPriority:         0\nService Account:  default\nNode:             kind-worker/172.18.0.4\nStart Time:       Tue, 13 Jan 2026 07:59:17 +0000\nLabels:           app=url-shorten-mongodb\n                  pod-template-hash=d57db69c5\n                  service=url-shorten-mongodb\nAnnotations:      kubectl.kubernetes.io/restartedAt: 2026-01-13T07:58:50Z\nStatus:           Running\nIP:               10.244.1.40\nIPs:\n  IP:           10.244.1.40\nControlled By:  ReplicaSet/url-shorten-mongodb-d57db69c5\nContainers:\n  url-shorten-mongodb:\n    Container ID:  containerd://6347babd4d9af55673cae2b3385468f3505611dac884350d5347f12c5db55068\n    Image:         docker.io/library/mongo:4.4.6\n    Image ID:      docker.io/library/mongo@sha256:6efa052039903e731e4a5550c68a13c4869ddc93742c716332883fd9c77eb79b\n    Port:          27017/TCP\n    Host Port:     0/TCP\n    Args:\n      --config\n      /social-network-microservices/config/mongod.conf\n    State:          Waiting\n      Reason:       CrashLoopBackOff\n    Last State:     Terminated\n      Reason:       Error\n      Exit Code:    14\n      Started:      Tue, 13 Jan 2026 08:05:15 +0000\n      Finished:     Tue, 13 Jan 2026 08:05:15 +0000\n    Ready:          False\n    Restart Count:  6\n    Environment:    <none>\n    Mounts:\n      /etc/tls from tls-cert (ro)\n      /social-network-microservices/config/mongod.conf from url-shorten-mongodb-config (rw,path=\"mongod.conf\")\n      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-bp9nd (ro)\nConditions:\n  Type                        Status\n  PodReadyToStartContainers   True \n  Initialized                 True \n  Ready                       False \n  ContainersReady             False \n  PodScheduled                True \nVolumes:\n  url-shorten-mongodb-config:\n    Type:      ConfigMap (a volume populated by a ConfigMap)\n    Name:      url-shorten-mongodb\n    Optional:  false\n  tls-cert:\n    Type:        Secret (a volume populated by a Secret)\n    SecretName:  mongodb-tls\n    Optional:    false\n  kube-api-access-bp9nd:\n    Type:                    Projected (a volume that contains injected data from multiple sources)\n    TokenExpirationSeconds:  3607\n    ConfigMapName:           kube-root-ca.crt\n    Optional:                false\n    DownwardAPI:             true\nQoS Class:                   BestEffort\nNode-Selectors:              <none>\nTolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s\n                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s\nEvents:\n  Type     Reason     Age                     From               Message\n  ----     ------     ----                    ----               -------\n  Normal   Scheduled  9m50s                   default-scheduler  Successfully assigned test-social-network/url-shorten-mongodb-d57db69c5-v22kc to kind-worker\n  Normal   Pulled     9m46s                   kubelet            Successfully pulled image \"docker.io/library/mongo:4.4.6\" in 544ms (3.364s including waiting). Image size: 167655616 bytes.\n  Normal   Pulled     9m42s                   kubelet            Successfully pulled image \"docker.io/library/mongo:4.4.6\" in 1.489s (1.489s including waiting). Image size: 167655616 bytes.\n  Normal   Pulled     9m28s                   kubelet            Successfully pulled image \"docker.io/library/mongo:4.4.6\" in 873ms (873ms including waiting). Image size: 167655616 bytes.\n  Normal   Pulled     8m59s                   kubelet            Successfully pulled image \"docker.io/library/mongo:4.4.6\" in 2.788s (2.788s including waiting). Image size: 167655616 bytes.\n  Normal   Pulled     8m13s                   kubelet            Successfully pulled image \"docker.io/library/mongo:4.4.6\" in 501ms (501ms including waiting). Image size: 167655616 bytes.\n  Normal   Created    6m39s (x6 over 9m45s)   kubelet            Created container: url-shorten-mongodb\n  Normal   Started    6m39s (x6 over 9m45s)   kubelet            Started container url-shorten-mongodb\n  Normal   Pulled     6m39s                   kubelet            Successfully pulled image \"docker.io/library/mongo:4.4.6\" in 1.127s (1.127s including waiting). Image size: 167655616 bytes.\n  Warning  BackOff    4m32s (x26 over 9m41s)  kubelet            Back-off restarting failed container url-shorten-mongodb in pod url-shorten-mongodb-d57db69c5-v22kc_test-social-network(a685ed3f-4dfc-4f8f-aaf9-5db4abf9a7fa)\n  Normal   Pulling    3m53s (x7 over 9m50s)   kubelet            Pulling image \"docker.io/library/mongo:4.4.6\"\n  Normal   Pulled     3m52s                   kubelet            Successfully pulled image \"docker.io/library/mongo:4.4.6\" in 985ms (985ms including waiting). Image size: 167655616 bytes.\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 2: The container's previous logs will contain the MongoDB startup error (e.g., cannot read mongod.conf, TLS cert issues, or other fatal startup message) that explains Exit Code 14 and CrashLoopBackOff. I'll fetch the previous logs for the pod's container.",
+          "tool_calls": [
+            {
+              "name": "get_logs",
+              "args": {
+                "resource_name": "url-shorten-mongodb-d57db69c5-v22kc",
+                "resource_type": "pod",
+                "tail": 200,
+                "important": false
+              },
+              "id": "call_AyRQOjvRFa5cbs0vz5SqEnPu",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\"t\":{\"$date\":\"2026-01-13T08:05:15.547+00:00\"},\"s\":\"F\",  \"c\":\"NETWORK\",  \"id\":28652,   \"ctx\":\"main\",\"msg\":\"The provided SSL certificate is expired or not yet valid.\"}\n{\"t\":{\"$date\":\"2026-01-13T08:05:15.547+00:00\"},\"s\":\"F\",  \"c\":\"-\",        \"id\":23091,   \"ctx\":\"main\",\"msg\":\"Fatal assertion\",\"attr\":{\"msgid\":28652,\"file\":\"src/mongo/util/net/ssl_manager_openssl.cpp\",\"line\":2269}}\n{\"t\":{\"$date\":\"2026-01-13T08:05:15.547+00:00\"},\"s\":\"F\",  \"c\":\"-\",        \"id\":23092,   \"ctx\":\"main\",\"msg\":\"\\n\\n***aborting after fassert() failure\\n\\n\"}\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "The MongoDB container (pod url-shorten-mongodb-d57db69c5-v22kc) is crashing on startup because the mounted TLS certificate is invalid (expired or not yet valid), causing MongoDB to fail with a fatal SSL assertion and exit (Exit Code 14) leading to CrashLoopBackOff.",
+                "reasoning": "kubectl describe pod shows container in CrashLoopBackOff with Last State Terminated: Exit Code 14 and mounts include a tls-cert secret. Pod events indicate repeated restarts. Container logs contain the decisive error: \"The provided SSL certificate is expired or not yet valid.\" followed by a fatal assertion and abort. These two unique data points (exit code + TLS secret mount from pod describe, and the SSL fatal error from logs) directly identify the invalid TLS certificate as the root cause."
+              },
+              "id": "call_RJgiEXVomfFdmETrZM0nnQz8",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    },
+    {
+      "diagnosis": "The Service 'url-shorten-mongodb' exists in namespace 'test-social-network' and correctly targets the MongoDB pod: the Service selector (service=url-shorten-mongodb) matches the pod label, and the Service port/targetPort (27017) matches the containerPort (27017). The pod is CrashLoopBackOff (containers failing to start), so startup/replica issues are due to container-internal failure (e.g., mongod config, TLS/configMap/volume, or process error), not a missing/misnamed Service or selector/port mismatch.",
+      "reasoning": "1) Pod inspection (url-shorten-mongodb-d57db69c5-v22kc): labels include service=url-shorten-mongodb; container defines port 27017; hostname is url-shorten-mongodb; pod status shows CrashLoopBackOff and restartCount=6 (container failing). 2) Service inspection (Service url-shorten-mongodb): selector is {service: url-shorten-mongodb}; ports list includes port 27017 with targetPort 27017; type=ClusterIP and clusterIP assigned. These two unique data points show selectors and ports align, ruling out the hypothesis that the Service is missing/misnamed or has mismatched selectors/ports. The remaining failure is internal to the container (investigate container logs/configs).",
+      "task": {
+        "priority": 2,
+        "status": "completed",
+        "investigation_goal": "Connection check (two-sided) between the pod and the Kubernetes Service that the container expects. Testable hypothesis: the container expects a Service named 'url-shorten-mongodb' (or similar) but that Service is missing/misnamed or its ports/selectors do not match the pod, causing startup/replica discovery failures. Actionable checks (both sides): 1) Inspect the pod spec (env vars, args, SD/replica-set configs, DNS names) for any reference to service name(s) or ports. 2) kubectl get service url-shorten-mongodb -n test-social-network; if exists, describe its spec (type, ports, selector, clusterIP/headless) and verify selectors match the pod labels and port names/numbers match containerPort. If the Service does not exist, record that and link to the garbled data_dependencies noting the same message.",
+        "target_resource": "Service/url-shorten-mongodb",
+        "resource_type": "service",
+        "suggested_tools": [
+          "kubectl"
+        ]
+      },
+      "insights": [
+        "Pods list in test-social-network includes url-shorten-mongodb-d57db69c5-v22kc running but with container in CrashLoopBackOff",
+        "Pod url-shorten-mongodb-d57db69c5-v22kc metadata labels include service=url-shorten-mongodb and app=url-shorten-mongodb (matches Service selector)",
+        "Pod container declares containerPort 27017 (mongo default) and mounts config and TLS volumes (configMap url-shorten-mongodb and secret mongodb-tls)",
+        "Pod status shows container url-shorten-mongodb in state CrashLoopBackOff with restartCount=6 and last terminated with exitCode=14, indicating internal process failure",
+        "Service url-shorten-mongodb exists with selector {service: url-shorten-mongodb} and port/targetPort 27017 (matches pod), type=ClusterIP with clusterIP assigned",
+        "Correlation of Pod and Service confirms selector and port alignment, ruling out Service misconfiguration or selector/port mismatch as the cause",
+        "Root cause narrowed to container-internal startup failure (e.g., mongod configuration, TLS secret, or configMap issues) rather than networking/Service issues"
+      ],
+      "steps_performed": [
+        "Checked pods in namespace test-social-network using kubectl_get",
+        "Checked pod url-shorten-mongodb-d57db69c5-v22kc using kubectl_get",
+        "Checked Service url-shorten-mongodb in namespace test-social-network using kubectl_get",
+        "Submitted final diagnosis"
+      ],
+      "tools_stats": {
+        "kubectl_get": 3,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 1: There are pods in namespace \"test-social-network\" (the application pods) whose spec/env/args may reference the service name 'url-shorten-mongodb'. I'll list all pods in that namespace to identify candidate pod(s) to inspect. I'll request a JSON list of pods.",
+          "tool_calls": [
+            {
+              "name": "kubectl_get",
+              "args": {
+                "resourceType": "pods",
+                "namespace": "test-social-network",
+                "output": "json"
+              },
+              "id": "call_obmi2o0waTNZ9iUPogYnsKb1",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n  \"items\": [\n    {\n      \"name\": \"compose-post-service-7b495f794-g7z8v\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:42Z\"\n    },\n    {\n      \"name\": \"home-timeline-redis-7f7686d8f5-zhh2r\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:41Z\"\n    },\n    {\n      \"name\": \"home-timeline-service-6bf55fbcd8-64lxk\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:44Z\"\n    },\n    {\n      \"name\": \"jaeger-7cb68977df-fvf77\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:43Z\"\n    },\n    {\n      \"name\": \"media-frontend-7ccdcc5874-cmnrt\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:45Z\"\n    },\n    {\n      \"name\": \"media-memcached-6f888776fd-qqllg\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:44Z\"\n    },\n    {\n      \"name\": \"media-mongodb-66c679cd9-wjzcm\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:41Z\"\n    },\n    {\n      \"name\": \"media-service-8486767bd-n2q5k\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:41Z\"\n    },\n    {\n      \"name\": \"nginx-thrift-7fbb6d9b65-55fd5\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:44Z\"\n    },\n    {\n      \"name\": \"post-storage-memcached-6dcc4b4c66-r4ttk\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:41Z\"\n    },\n    {\n      \"name\": \"post-storage-mongodb-6db994db57-nmmkj\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:43Z\"\n    },\n    {\n      \"name\": \"post-storage-service-5f4d46cbb9-nfqxd\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:41Z\"\n    },\n    {\n      \"name\": \"social-graph-mongodb-8485c8fc7-btngb\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:44Z\"\n    },\n    {\n      \"name\": \"social-graph-redis-66688cfbd8-6t5kz\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:41Z\"\n    },\n    {\n      \"name\": \"social-graph-service-65b8ddbdbc-kqw5v\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:44Z\"\n    },\n    {\n      \"name\": \"text-service-774b6cf48f-txgwq\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:41Z\"\n    },\n    {\n      \"name\": \"unique-id-service-fc74bdf74-n55t9\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:44Z\"\n    },\n    {\n      \"name\": \"url-shorten-memcached-566bf679b4-bgfkk\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:41Z\"\n    },\n    {\n      \"name\": \"url-shorten-mongodb-d57db69c5-v22kc\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:59:17Z\"\n    },\n    {\n      \"name\": \"url-shorten-service-598df5754-6mxwp\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:58:15Z\"\n    },\n    {\n      \"name\": \"user-memcached-849988fd5b-8fzrw\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:42Z\"\n    },\n    {\n      \"name\": \"user-mention-service-59cf6d5b8f-s5kqv\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:43Z\"\n    },\n    {\n      \"name\": \"user-mongodb-5cf7c6cd7b-sdk58\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:42Z\"\n    },\n    {\n      \"name\": \"user-service-5cf866746f-4vf9q\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:43Z\"\n    },\n    {\n      \"name\": \"user-timeline-mongodb-c895ffcc8-7xljl\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:42Z\"\n    },\n    {\n      \"name\": \"user-timeline-redis-84dc9b4599-b6ph2\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:41Z\"\n    },\n    {\n      \"name\": \"user-timeline-service-647bd67bfb-27pzd\",\n      \"namespace\": \"test-social-network\",\n      \"kind\": \"Pod\",\n      \"status\": \"Running\",\n      \"createdAt\": \"2026-01-13T07:56:42Z\"\n    }\n  ]\n}"
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 2: The url-shorten-mongodb pod spec will include container port (likely 27017) and labels that should match the Service selector. I'll fetch the pod's full JSON spec to inspect labels, containerPorts, and env.",
+          "tool_calls": [
+            {
+              "name": "kubectl_get",
+              "args": {
+                "resourceType": "pods",
+                "name": "url-shorten-mongodb-d57db69c5-v22kc",
+                "namespace": "test-social-network",
+                "output": "json"
+              },
+              "id": "call_AwPfi5QBNsIoc0bLVUTmhTtn",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n    \"apiVersion\": \"v1\",\n    \"kind\": \"Pod\",\n    \"metadata\": {\n        \"annotations\": {\n            \"kubectl.kubernetes.io/restartedAt\": \"2026-01-13T07:58:50Z\"\n        },\n        \"creationTimestamp\": \"2026-01-13T07:59:17Z\",\n        \"generateName\": \"url-shorten-mongodb-d57db69c5-\",\n        \"labels\": {\n            \"app\": \"url-shorten-mongodb\",\n            \"pod-template-hash\": \"d57db69c5\",\n            \"service\": \"url-shorten-mongodb\"\n        },\n        \"name\": \"url-shorten-mongodb-d57db69c5-v22kc\",\n        \"namespace\": \"test-social-network\",\n        \"ownerReferences\": [\n            {\n                \"apiVersion\": \"apps/v1\",\n                \"blockOwnerDeletion\": true,\n                \"controller\": true,\n                \"kind\": \"ReplicaSet\",\n                \"name\": \"url-shorten-mongodb-d57db69c5\",\n                \"uid\": \"8d859c25-0c17-4f0d-8bdb-23b0e4d68a68\"\n            }\n        ],\n        \"resourceVersion\": \"2949\",\n        \"uid\": \"a685ed3f-4dfc-4f8f-aaf9-5db4abf9a7fa\"\n    },\n    \"spec\": {\n        \"containers\": [\n            {\n                \"args\": [\n                    \"--config\",\n                    \"/social-network-microservices/config/mongod.conf\"\n                ],\n                \"image\": \"docker.io/library/mongo:4.4.6\",\n                \"imagePullPolicy\": \"Always\",\n                \"name\": \"url-shorten-mongodb\",\n                \"ports\": [\n                    {\n                        \"containerPort\": 27017,\n                        \"protocol\": \"TCP\"\n                    }\n                ],\n                \"resources\": {},\n                \"terminationMessagePath\": \"/dev/termination-log\",\n                \"terminationMessagePolicy\": \"File\",\n                \"volumeMounts\": [\n                    {\n                        \"mountPath\": \"/social-network-microservices/config/mongod.conf\",\n                        \"name\": \"url-shorten-mongodb-config\",\n                        \"subPath\": \"mongod.conf\"\n                    },\n                    {\n                        \"mountPath\": \"/etc/tls\",\n                        \"name\": \"tls-cert\",\n                        \"readOnly\": true\n                    },\n                    {\n                        \"mountPath\": \"/var/run/secrets/kubernetes.io/serviceaccount\",\n                        \"name\": \"kube-api-access-bp9nd\",\n                        \"readOnly\": true\n                    }\n                ]\n            }\n        ],\n        \"dnsPolicy\": \"ClusterFirst\",\n        \"enableServiceLinks\": true,\n        \"hostname\": \"url-shorten-mongodb\",\n        \"nodeName\": \"kind-worker\",\n        \"preemptionPolicy\": \"PreemptLowerPriority\",\n        \"priority\": 0,\n        \"restartPolicy\": \"Always\",\n        \"schedulerName\": \"default-scheduler\",\n        \"securityContext\": {},\n        \"serviceAccount\": \"default\",\n        \"serviceAccountName\": \"default\",\n        \"terminationGracePeriodSeconds\": 30,\n        \"tolerations\": [\n            {\n                \"effect\": \"NoExecute\",\n                \"key\": \"node.kubernetes.io/not-ready\",\n                \"operator\": \"Exists\",\n                \"tolerationSeconds\": 300\n            },\n            {\n                \"effect\": \"NoExecute\",\n                \"key\": \"node.kubernetes.io/unreachable\",\n                \"operator\": \"Exists\",\n                \"tolerationSeconds\": 300\n            }\n        ],\n        \"volumes\": [\n            {\n                \"configMap\": {\n                    \"defaultMode\": 420,\n                    \"name\": \"url-shorten-mongodb\"\n                },\n                \"name\": \"url-shorten-mongodb-config\"\n            },\n            {\n                \"name\": \"tls-cert\",\n                \"secret\": {\n                    \"defaultMode\": 420,\n                    \"secretName\": \"mongodb-tls\"\n                }\n            },\n            {\n                \"name\": \"kube-api-access-bp9nd\",\n                \"projected\": {\n                    \"defaultMode\": 420,\n                    \"sources\": [\n                        {\n                            \"serviceAccountToken\": {\n                                \"expirationSeconds\": 3607,\n                                \"path\": \"token\"\n                            }\n                        },\n                        {\n                            \"configMap\": {\n                                \"items\": [\n                                    {\n                                        \"key\": \"ca.crt\",\n                                        \"path\": \"ca.crt\"\n                                    }\n                                ],\n                                \"name\": \"kube-root-ca.crt\"\n                            }\n                        },\n                        {\n                            \"downwardAPI\": {\n                                \"items\": [\n                                    {\n                                        \"fieldRef\": {\n                                            \"apiVersion\": \"v1\",\n                                            \"fieldPath\": \"metadata.namespace\"\n                                        },\n                                        \"path\": \"namespace\"\n                                    }\n                                ]\n                            }\n                        }\n                    ]\n                }\n            }\n        ]\n    },\n    \"status\": {\n        \"conditions\": [\n            {\n                \"lastProbeTime\": null,\n                \"lastTransitionTime\": \"2026-01-13T07:59:23Z\",\n                \"status\": \"True\",\n                \"type\": \"PodReadyToStartContainers\"\n            },\n            {\n                \"lastProbeTime\": null,\n                \"lastTransitionTime\": \"2026-01-13T07:59:17Z\",\n                \"status\": \"True\",\n                \"type\": \"Initialized\"\n            },\n            {\n                \"lastProbeTime\": null,\n                \"lastTransitionTime\": \"2026-01-13T08:00:09Z\",\n                \"message\": \"containers with unready status: [url-shorten-mongodb]\",\n                \"reason\": \"ContainersNotReady\",\n                \"status\": \"False\",\n                \"type\": \"Ready\"\n            },\n            {\n                \"lastProbeTime\": null,\n                \"lastTransitionTime\": \"2026-01-13T08:00:09Z\",\n                \"message\": \"containers with unready status: [url-shorten-mongodb]\",\n                \"reason\": \"ContainersNotReady\",\n                \"status\": \"False\",\n                \"type\": \"ContainersReady\"\n            },\n            {\n                \"lastProbeTime\": null,\n                \"lastTransitionTime\": \"2026-01-13T07:59:17Z\",\n                \"status\": \"True\",\n                \"type\": \"PodScheduled\"\n            }\n        ],\n        \"containerStatuses\": [\n            {\n                \"containerID\": \"containerd://6347babd4d9af55673cae2b3385468f3505611dac884350d5347f12c5db55068\",\n                \"image\": \"docker.io/library/mongo:4.4.6\",\n                \"imageID\": \"docker.io/library/mongo@sha256:6efa052039903e731e4a5550c68a13c4869ddc93742c716332883fd9c77eb79b\",\n                \"lastState\": {\n                    \"terminated\": {\n                        \"containerID\": \"containerd://6347babd4d9af55673cae2b3385468f3505611dac884350d5347f12c5db55068\",\n                        \"exitCode\": 14,\n                        \"finishedAt\": \"2026-01-13T08:05:15Z\",\n                        \"reason\": \"Error\",\n                        \"startedAt\": \"2026-01-13T08:05:15Z\"\n                    }\n                },\n                \"name\": \"url-shorten-mongodb\",\n                \"ready\": false,\n                \"restartCount\": 6,\n                \"started\": false,\n                \"state\": {\n                    \"waiting\": {\n                        \"message\": \"back-off 5m0s restarting failed container=url-shorten-mongodb pod=url-shorten-mongodb-d57db69c5-v22kc_test-social-network(a685ed3f-4dfc-4f8f-aaf9-5db4abf9a7fa)\",\n                        \"reason\": \"CrashLoopBackOff\"\n                    }\n                },\n                \"volumeMounts\": [\n                    {\n                        \"mountPath\": \"/social-network-microservices/config/mongod.conf\",\n                        \"name\": \"url-shorten-mongodb-config\"\n                    },\n                    {\n                        \"mountPath\": \"/etc/tls\",\n                        \"name\": \"tls-cert\",\n                        \"readOnly\": true,\n                        \"recursiveReadOnly\": \"Disabled\"\n                    },\n                    {\n                        \"mountPath\": \"/var/run/secrets/kubernetes.io/serviceaccount\",\n                        \"name\": \"kube-api-access-bp9nd\",\n                        \"readOnly\": true,\n                        \"recursiveReadOnly\": \"Disabled\"\n                    }\n                ]\n            }\n        ],\n        \"hostIP\": \"172.18.0.4\",\n        \"hostIPs\": [\n            {\n                \"ip\": \"172.18.0.4\"\n            }\n        ],\n        \"phase\": \"Running\",\n        \"podIP\": \"10.244.1.40\",\n        \"podIPs\": [\n            {\n                \"ip\": \"10.244.1.40\"\n            }\n        ],\n        \"qosClass\": \"BestEffort\",\n        \"startTime\": \"2026-01-13T07:59:17Z\"\n    }\n}\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 3: A Service named 'url-shorten-mongodb' exists in namespace 'test-social-network' and should target pods with label app=url-shorten-mongodb and expose port 27017. I'll get the Service resource JSON to verify its ports, selector, type, and clusterIP/headless setting.",
+          "tool_calls": [
+            {
+              "name": "kubectl_get",
+              "args": {
+                "resourceType": "service",
+                "name": "url-shorten-mongodb",
+                "namespace": "test-social-network",
+                "output": "json"
+              },
+              "id": "call_14Ji0xjrDmskm8zYcE9CzE99",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n    \"apiVersion\": \"v1\",\n    \"kind\": \"Service\",\n    \"metadata\": {\n        \"annotations\": {\n            \"meta.helm.sh/release-name\": \"social-network\",\n            \"meta.helm.sh/release-namespace\": \"test-social-network\"\n        },\n        \"creationTimestamp\": \"2026-01-13T07:56:41Z\",\n        \"labels\": {\n            \"app.kubernetes.io/managed-by\": \"Helm\"\n        },\n        \"name\": \"url-shorten-mongodb\",\n        \"namespace\": \"test-social-network\",\n        \"resourceVersion\": \"1204\",\n        \"uid\": \"7357f108-9682-4a3c-afa3-9378032136f7\"\n    },\n    \"spec\": {\n        \"clusterIP\": \"10.96.148.4\",\n        \"clusterIPs\": [\n            \"10.96.148.4\"\n        ],\n        \"internalTrafficPolicy\": \"Cluster\",\n        \"ipFamilies\": [\n            \"IPv4\"\n        ],\n        \"ipFamilyPolicy\": \"SingleStack\",\n        \"ports\": [\n            {\n                \"name\": \"27017\",\n                \"port\": 27017,\n                \"protocol\": \"TCP\",\n                \"targetPort\": 27017\n            }\n        ],\n        \"selector\": {\n            \"service\": \"url-shorten-mongodb\"\n        },\n        \"sessionAffinity\": \"None\",\n        \"type\": \"ClusterIP\"\n    },\n    \"status\": {\n        \"loadBalancer\": {}\n    }\n}\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "The Service 'url-shorten-mongodb' exists in namespace 'test-social-network' and correctly targets the MongoDB pod: the Service selector (service=url-shorten-mongodb) matches the pod label, and the Service port/targetPort (27017) matches the containerPort (27017). The pod is CrashLoopBackOff (containers failing to start), so startup/replica issues are due to container-internal failure (e.g., mongod config, TLS/configMap/volume, or process error), not a missing/misnamed Service or selector/port mismatch.",
+                "reasoning": "1) Pod inspection (url-shorten-mongodb-d57db69c5-v22kc): labels include service=url-shorten-mongodb; container defines port 27017; hostname is url-shorten-mongodb; pod status shows CrashLoopBackOff and restartCount=6 (container failing). 2) Service inspection (Service url-shorten-mongodb): selector is {service: url-shorten-mongodb}; ports list includes port 27017 with targetPort 27017; type=ClusterIP and clusterIP assigned. These two unique data points show selectors and ports align, ruling out the hypothesis that the Service is missing/misnamed or has mismatched selectors/ports. The remaining failure is internal to the container (investigate container logs/configs)."
+              },
+              "id": "call_LsXB0Y5GFy9ukLmVhxVVXHCC",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    }
+  ],
+  "tasks_to_be_executed": [],
+  "final_report": {
+    "root_cause": "The MongoDB process in pod url-shorten-mongodb-d57db69c5-v22kc aborts on startup because the TLS certificate mounted from Secret 'mongodb-tls' is invalid (expired or otherwise outside its validity window). MongoDB fails a fatal SSL assertion (Exit Code 14) during startup when it validates the certificate, causing the container to exit repeatedly and the pod to enter CrashLoopBackOff. The problem began when the certificate in the mongodb-tls secret became invalid (expired or not-yet-valid) and was mounted into the pod at /etc/tls, so mongod cannot establish its required TLS configuration and aborts immediately.",
+    "affected_resources": [
+      "pod/url-shorten-mongodb-d57db69c5-v22kc",
+      "secret/mongodb-tls",
+      "configmap/url-shorten-mongodb",
+      "service/url-shorten-mongodb (ClusterIP)"
+    ],
+    "evidence_summary": "1) Pod state and events show url-shorten-mongodb-d57db69c5-v22kc in CrashLoopBackOff with restartCount=6 and Last State Terminated Exit Code 14. 2) Container logs contain a decisive MongoDB SSL error: \"The provided SSL certificate is expired or not yet valid.\" followed by a fatal assertion and process abort. 3) Pod spec mounts a tls-cert secret (SecretName: mongodb-tls -> mounted at /etc/tls), linking the invalid certificate to the pod's TLS configuration. 4) Service url-shorten-mongodb exists and correctly selects the pod (selector and port match), indicating the failure is internal to the container (TLS/certificate) rather than a Service misconfiguration.",
+    "investigation_summary": "Priority-1 investigation performed: kubectl describe on the pod showed repeated container terminations (Exit Code 14) and CrashLoopBackOff; kubectl logs (previous) captured a fatal SSL/TLS assertion stating the certificate is expired or not yet valid. The pod mounts a tls-cert secret (mongodb-tls) and a ConfigMap for mongod.conf; logs, exit code, and volume mounts were correlated to localize the failure to the TLS certificate. Priority-2 checks confirmed the Service 'url-shorten-mongodb' exists and its selector and port match the pod, ruling out missing/misnamed Service or port mismatch. No evidence was found that PVCs, probes, or image issues are the primary cause. Based on the combined evidence, the invalid certificate in secret/mongodb-tls is the proximate cause of mongod failing to start.",
+    "detection": true,
+    "localization": [
+      "secret/mongodb-tls"
+    ]
+  },
+  "prompts_config": {
+    "triage_agent": "You are an expert Site Reliability Engineer. Your mission is to triage a Kubernetes application by analyzing the provided data.\n\nYour analysis must adhere to the following rules:\n1.  **Focus**: Identify symptoms at the **pod or service level only**. Do not provide cluster-wide analysis or generalizations.\n2.  **Aggregation**: For each pod or service that has issues, create **at most one symptom entry**. Aggregate all related evidence (from pods, metrics, traces) into that single entry.\n3.  **Action**: Synthesize the information to identify and list potential symptoms. For each symptom, pinpoint the affected resource (pod or service) and cite the specific evidence.\n4.  **Resource Naming**: In the `affected_resource` field, provide ONLY the exact resource name without any decorators, prefixes, or namespace qualifiers (e.g., use \"geo-6b4b89b5f5-rsrh7\" NOT \"test-hotel-reservation/geo-6b4b89b5f5-rsrh7\").\n5.  **Trace-Only Evidence**: If error traces are the only signals, still produce symptoms by identifying the service (or pod) that owns the failing span and summarizing the suspected issue using the trace error message. Avoid generic \"trace failed\" statements\u2014make the hypothesis explicit (e.g., \"checkout-service may have invalid credentials because trace X shows `401 Unauthorized` calling payment-service\").\n6.  **Empty State**: If the provided data contains no issues, it is correct to return an empty list of symptoms.",
+    "planner_agent": "You are an expert Site Reliability Engineer. Produce a concise, de-duplicated investigation plan where each task inspects a precise part of the infrastructure to surface the most likely root-cause signals and converge on the true RCA quickly.\n\n**Planning Rules**\n1. For every symptom, classify the dominant failure domain (app, latency, dependency/config, or platform) and craft a single, testable hypothesis per resource.\n2. Use the `data_dependencies` and `infra_dependencies` JSON to ground every hypothesis. Merge overlapping symptoms into one task per resource.\n3. **Connections (non-negotiable):** Always create at least one task that inspects the connection between every pair of affected resources or the epicenter and its downstream dependents. These tasks must perform explicit two-sided checks (e.g., verify `service-a`'s config for `service-b`'s URL **and** inspect `service-b`'s Kubernetes service definition for the matching port/name) to catch login/URL/port misconfigurations.\n\n**Tool Selection**\nYou are obligated to fill the field with \"the smallest set of tools required to accomplish the task\"\n\n**Priority Policy**\n- Assign unique priorities (1..N).\n- Priority 1 is the most direct epicenter investigation. Immediately after that, schedule the connection-check tasks described above; treat them as top-tier because they frequently surface misconfigurations.\n- Remaining priorities should rank other high-impact hypotheses (shared dependencies, severe crashes) ahead of narrow or low-scope checks.\n",
+    "rca_agent": "You are an expert DevOps engineer performing focused Root Cause Analysis on a Kubernetes service.\n\nInstructions:\n1. You have full autonomy to select the necessary tools from the toolkit. Decide which tools are required to verify your hypotheses efficiently.\n2. For each tool call, first formulate a clear, testable hypothesis about a possible root cause that can be answered by the result. Avoid broad or exploratory queries.\n3. Each tool call must provide unique, non-overlapping information. Never repeat requests with similar parameters or investigate the same aspect repeatedly in slightly different ways.\n4. Stop investigating, even if you have not reached the budget limit, when you have:\n   - Clear evidence that directly identifies a root cause (or definitively rules one out)\n   - Multiple data points indicating the same failure/cause\n   - Sufficient information to answer the investigation goal\n5. DO NOT:\n   - Repeat or re-run tools unless you are testing a truly new and justified hypothesis\n   - Investigate unrelated resources or expand scope beyond the investigation goal\n6. When you have gathered sufficient, non-redundant evidence (typically after 2-3 targeted tool calls), call submit_final_diagnosis with:\n   - diagnosis: State the precise root cause as it pertains to the investigation goal\n   - reasoning: Support your diagnosis by referencing unique findings from your tool calls\n\nREMEMBER: Quality over quantity. Focus on unique and conclusive findings rather than exhaustive or repetitive investigation\n",
+    "supervisor_agent": "You are an expert Site Reliability Engineer analyzing RCA findings to determine the root cause of an incident.\n\nAnalyze all symptoms and investigation findings to:\n1. Identify patterns and correlations across findings\n2. Determine the primary root cause\n3. List all affected resources\n4. Summarize key evidence\n\n**Understanding Task Priority:**\nEach RCA investigation task has been assigned a priority level:\n- Priority 1 = Most important / Most likely to reveal root cause (investigated first)\n- Priority 2, 3, ... = Progressively lower importance\n- Tasks with lower priority numbers should generally have higher weight in your analysis\n- The priority reflects the likelihood that investigating that task/resource would uncover the root cause\n\nUse the priority information to contextualize findings: results from priority 1 tasks are typically more significant for determining root cause than lower priority investigations.\n\n**Detection & Localization Requirements:**\n- **detection**: Set to `true` if any problem/anomaly was detected in the cluster based on the evidence. Set to `false` only if no issues are found.\n- **localization**: Provide a list of ONLY the faulty/problematic components (service names or pod names) directly identified as the root cause. This should be a minimal, precise list - extract ONLY the specific resource(s) that caused the incident, not all affected resources.\n  - Example: If a service \"user-service\" has a misconfiguration causing downstream failures, localization = [\"user-service\"]\n  - Example: If a pod \"database-pod-xyz\" is failing, localization = [\"database-pod-xyz\"]\n  - Leave empty/null if the root cause cannot be localized to a specific service or pod.\n\n**Root Cause Expectations:**\n- Build a causal chain that connects symptoms, investigation evidence, and the precise failure mechanism\n- Cite concrete configuration or runtime details (e.g., \"service expects port 5432 but database listens on 5433\") when diagnosing misconfigurations or integration issues\n- If evidence stops at the symptom level, identify the missing proof and pursue it before finalizing\n\n**Strict Iteration Policy:**\nOnly request another RCA iteration when the existing evidence is insufficient to produce a confident final diagnosis. Never re-run or re-request tasks already marked as completed or currently in progress. When additional work is unavoidable, list only the minimal set of pending task priorities in `tasks_to_be_executed` and clearly justify why each is required. If the current findings support a solid root cause, leave `tasks_to_be_executed` empty and finalize the report.\n\nWhen you need more evidence, ask for the most targeted pending tasks that can close the causal gap (for example, verifying port mappings, credentials, or configuration values at both ends of a failing connection).\n\nProvide a clear, specific root cause statement that explains what caused the incident and why it happened now."
+  },
+  "experiment_name": "F - Tool-free planning React P2 B7 - Social Network - MongoDB url-shorten authentication missing (hypothesis-test-hotel-res)",
+  "agent_id": "F",
+  "agent_configuration_name": "F - Tool-free planning React P2 B7",
+  "stats": {
+    "run_id": "beda74b5-c0fb-4117-ba76-00f4c06b1920",
+    "experiment_name": "F - Tool-free planning React P2 B7 - Social Network - MongoDB url-shorten authentication missing (hypothesis-test-hotel-res)",
+    "status": "success",
+    "execution_time_seconds": 217.605286,
+    "total_tokens": 54272,
+    "total_cost": 0.022609999999999998,
+    "langsmith_url": "https://smith.langchain.com/o/abfc6d67-41f7-486b-956b-7589404f3bd1/projects/p/2264bd80-45a8-4ab7-b5b3-23b64980ca6f/r/beda74b5-c0fb-4117-ba76-00f4c06b1920?trace_id=beda74b5-c0fb-4117-ba76-00f4c06b1920&start_time=2026-01-13T08:07:20.206429",
+    "agent_stats": {
+      "supervisor_agent": {
+        "total_tokens": 5357,
+        "input_tokens": 3871,
+        "output_tokens": 1486,
+        "cost": 0.002972,
+        "runs_count": 1
+      },
+      "rca_agent": {
+        "total_tokens": 42886,
+        "input_tokens": 36384,
+        "output_tokens": 6502,
+        "cost": 0.013004,
+        "runs_count": 2
+      },
+      "schedule_rca_tasks": {
+        "total_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost": 0.0,
+        "runs_count": 1
+      },
+      "planner_agent": {
+        "total_tokens": 4662,
+        "input_tokens": 1829,
+        "output_tokens": 2833,
+        "cost": 0.005666,
+        "runs_count": 1
+      },
+      "triage_agent": {
+        "total_tokens": 1367,
+        "input_tokens": 883,
+        "output_tokens": 484,
+        "cost": 0.000968,
+        "runs_count": 1
+      }
+    }
+  },
+  "testbed": {
+    "application_name": [
+      "Social Network"
+    ],
+    "fault_name": "MongoDB url-shorten authentication missing",
+    "target_namespace": "test-social-network",
+    "trace_service_starting_point": "nginx-thrift",
+    "rca_tasks_per_iteration": "2",
+    "max_tool_calls": "7"
+  },
+  "evaluation": {
+    "detection": true,
+    "localization": false,
+    "rca_score": 1,
+    "rca_motivation": "The agent focuses on a TLS certificate validity/SSL fatal assertion causing mongod startup failures, while the actual injected issue is a missing MongoDB authentication configuration. Although the general component (url-shorten-mongodb in the same namespace) is correct, the identified root cause is entirely different and unrelated to auth configuration, so this is effectively a wrong diagnosis."
+  }
+}

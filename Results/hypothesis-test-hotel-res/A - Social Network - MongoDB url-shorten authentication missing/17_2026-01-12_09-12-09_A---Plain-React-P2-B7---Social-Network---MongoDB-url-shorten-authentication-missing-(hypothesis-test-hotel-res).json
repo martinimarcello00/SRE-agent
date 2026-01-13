@@ -1,0 +1,381 @@
+{
+  "app_name": "Social Network",
+  "app_summary": "A social network with unidirectional follow relationships, implemented with loosely-coupled microservices, communicating with each other via Thrift RPCs. Supported Operations: Create text post (optional media: image, video, shortened URL, user tag), Read post, Read entire user timeline, Receive recommendations on which users to follow, Search database for user or post, Register/Login using user credentials, Follow/Unfollow user",
+  "target_namespace": "test-social-network",
+  "trace_service_starting_point": "nginx-thrift",
+  "problematic_pods": {
+    "problematic_pods": [
+      {
+        "pod_name": "url-shorten-mongodb-75c967659f-2nk99",
+        "namespace": "test-social-network",
+        "pod_phase": "Running",
+        "container_issues": [
+          {
+            "container_name": "url-shorten-mongodb",
+            "issue_type": "Waiting",
+            "reason": "CrashLoopBackOff",
+            "message": "back-off 5m0s restarting failed container=url-shorten-mongodb pod=url-shorten-mongodb-75c967659f-2nk99_test-social-network(17b7d298-9375-4302-89d7-dcf182e91091)",
+            "restart_count": 24
+          }
+        ]
+      }
+    ]
+  },
+  "slow_traces": {
+    "service": "nginx-thrift",
+    "traces": [],
+    "info": "No traces found for service 'nginx-thrift' with a minimum duration of 2000ms in the last 15m."
+  },
+  "problematic_metrics": {
+    "problematic_metrics": [],
+    "info": "All monitored metrics look healthy; no anomalous values detected."
+  },
+  "problematic_traces": {
+    "service": "nginx-thrift",
+    "traces": [],
+    "info": "No traces found for service 'nginx-thrift' with lookback '15m'."
+  },
+  "symptoms": [
+    {
+      "potential_symptom": "Container repeatedly crashing (CrashLoopBackOff) preventing stable pod operation",
+      "resource_type": "pod",
+      "affected_resource": "url-shorten-mongodb-75c967659f-2nk99",
+      "evidence": "Container 'url-shorten-mongodb' is in Waiting state with reason 'CrashLoopBackOff' and message 'back-off 5m0s restarting failed container=url-shorten-mongodb pod=url-shorten-mongodb-75c967659f-2nk99_test-social-network(17b7d298-9375-4302-89d7-dcf182e91091)'; restart_count=24; pod_phase='Running'. No anomalous pod metrics detected and no error traces available for further detail."
+    }
+  ],
+  "rca_tasks": [
+    {
+      "priority": 1,
+      "status": "in_progress",
+      "investigation_goal": "Determine why container url-shorten-mongodb in pod url-shorten-mongodb-75c967659f-2nk99 is crash-looping. Test the hypothesis that mongod is failing at startup due to an immediate process error (bad command/args, missing config/credentials, or filesystem permission/volume problem) by collecting the pod events and the container stdout/stderr logs.",
+      "target_resource": "url-shorten-mongodb-75c967659f-2nk99",
+      "resource_type": "pod",
+      "suggested_tools": [
+        "kubectl_describe (pod url-shorten-mongodb-75c967659f-2nk99 -n test-social-network)",
+        "get_logs (pod url-shorten-mongodb-75c967659f-2nk99 container=url-shorten-mongodb -n test-social-network)"
+      ]
+    },
+    {
+      "priority": 2,
+      "status": "in_progress",
+      "investigation_goal": "Verify the Kubernetes Service that should front this MongoDB pod. Hypothesis (grounded in data_dependencies: 'service url-shorten-mongodb doesn't exist in the cluster'): the Service resource is missing or its selector/port does not match the pod, which would cause callers to be unable to reach the DB. Perform a two-sided check: confirm Service existence/config and confirm which pods it endpoints to.",
+      "target_resource": "url-shorten-mongodb (service)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "kubectl_get (service url-shorten-mongodb -n test-social-network)",
+        "get_pods_from_service (service url-shorten-mongodb -n test-social-network)"
+      ]
+    },
+    {
+      "priority": 3,
+      "status": "pending",
+      "investigation_goal": "Inspect the workload controller that created this pod (StatefulSet/Deployment) for misconfiguration. Hypothesis: the owning StatefulSet/Deployment contains a bad image tag, incorrect startup command, or aggressive livenessProbe/startupProbe causing rapid restarts even though pod metrics look normal.",
+      "target_resource": "owner-controller-of-url-shorten-mongodb (StatefulSet/Deployment)",
+      "resource_type": "pod",
+      "suggested_tools": [
+        "kubectl_describe (statefulset url-shorten-mongodb -n test-social-network)"
+      ]
+    },
+    {
+      "priority": 4,
+      "status": "pending",
+      "investigation_goal": "Check persistent volumes and mounts the pod uses. Hypothesis: a referenced PVC is not Bound or has wrong accessMode/permissions so mongod cannot initialize the data directory, triggering a crashloop.",
+      "target_resource": "PVCs referenced by url-shorten-mongodb-75c967659f-2nk99",
+      "resource_type": "pod",
+      "suggested_tools": [
+        "kubectl_describe (pod url-shorten-mongodb-75c967659f-2nk99 -n test-social-network)",
+        "kubectl_get (pvc -n test-social-network)"
+      ]
+    },
+    {
+      "priority": 5,
+      "status": "pending",
+      "investigation_goal": "Discover which services depend on this MongoDB and verify caller <-> DB service config alignment. Hypothesis: callers are configured to use a service name/port that doesn't exist (matches the data_dependencies claim), so even if pod recovers callers will fail. Perform two-sided checks: list callers, then compare each caller's configured DB URL/port to the url-shorten-mongodb Service definition/endpoints.",
+      "target_resource": "callers-of-url-shorten-mongodb (unknown services)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_services_used_by (url-shorten-mongodb -n test-social-network)",
+        "kubectl_get (service url-shorten-mongodb -n test-social-network)"
+      ]
+    }
+  ],
+  "rca_analyses_list": [
+    {
+      "diagnosis": "The mongod process in container url-shorten-mongodb is crash-looping because it aborts at startup due to an invalid TLS certificate (the mounted mongodb-tls certificate is expired or not yet valid), causing a fatal SSL assertion and process exit.",
+      "reasoning": "kubectl_describe shows the container repeatedly CrashLoopBackOff with Exit Code 14 and a high restart count; the pod mounts a Secret named mongodb-tls for /etc/tls. Container logs contain a fatal OpenSSL error: \"The provided SSL certificate is expired or not yet valid.\" followed by a fatal assertion in ssl_manager_openssl.cpp and an abort. These two unique data points (pod events/exit code + explicit SSL certificate error in stdout) directly identify the TLS cert validity failure as the root cause.",
+      "task": {
+        "priority": 1,
+        "status": "completed",
+        "investigation_goal": "Determine why container url-shorten-mongodb in pod url-shorten-mongodb-75c967659f-2nk99 is crash-looping. Test the hypothesis that mongod is failing at startup due to an immediate process error (bad command/args, missing config/credentials, or filesystem permission/volume problem) by collecting the pod events and the container stdout/stderr logs.",
+        "target_resource": "url-shorten-mongodb-75c967659f-2nk99",
+        "resource_type": "pod",
+        "suggested_tools": [
+          "kubectl_describe (pod url-shorten-mongodb-75c967659f-2nk99 -n test-social-network)",
+          "get_logs (pod url-shorten-mongodb-75c967659f-2nk99 container=url-shorten-mongodb -n test-social-network)"
+        ]
+      },
+      "insights": [
+        "Pod url-shorten-mongodb-75c967659f-2nk99 is in CrashLoopBackOff with Restart Count 24 and Last Terminated Exit Code 14 (Error); pod mounts a Secret volume mongodb-tls at /etc/tls and a ConfigMap for mongod.conf",
+        "Container logs show a fatal OpenSSL/SSL error: \"The provided SSL certificate is expired or not yet valid.\", followed by a fatal assertion and process abort in mongo's ssl_manager_openssl.cpp",
+        "Correlation of pod state (CrashLoopBackOff, exit code) and logs indicates mongod fails at startup due to the mounted TLS certificate being invalid (expired or not yet valid), causing immediate process termination and repeated restarts",
+        "Confirmed root cause: invalid TLS certificate in the mongodb-tls Secret prevents mongod from starting; no evidence of other failures (image pull succeeded repeatedly)"
+      ],
+      "steps_performed": [
+        "Checked pod description using kubectl_describe for pod url-shorten-mongodb-75c967659f-2nk99 in namespace test-social-network",
+        "Checked pod events and container state from kubectl_describe output",
+        "Fetched container logs (tail 200) for pod url-shorten-mongodb-75c967659f-2nk99 using get_logs"
+      ],
+      "tools_stats": {
+        "kubectl_describe": 1,
+        "get_logs": 1,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis for kubectl_describe: If mongod is failing immediately due to a startup error (bad command/args, missing config/credentials, or filesystem/volume permission problem), the pod description and events will show repeated container termination entries (CrashLoopBackOff) and an Exit Code/Reason or event messages pointing to the immediate failure cause. I'll retrieve the pod description and events to confirm.\n\nCalling kubectl_describe for pod url-shorten-mongodb-75c967659f-2nk99 in namespace test-social-network.",
+          "tool_calls": [
+            {
+              "name": "kubectl_describe",
+              "args": {
+                "resourceType": "pods",
+                "name": "url-shorten-mongodb-75c967659f-2nk99",
+                "namespace": "test-social-network"
+              },
+              "id": "call_IIhAyzKC8KYUwi07UVEgbwl0",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Name:             url-shorten-mongodb-75c967659f-2nk99\nNamespace:        test-social-network\nPriority:         0\nService Account:  default\nNode:             kind-worker/172.18.0.3\nStart Time:       Mon, 12 Jan 2026 07:29:40 +0000\nLabels:           app=url-shorten-mongodb\n                  pod-template-hash=75c967659f\n                  service=url-shorten-mongodb\nAnnotations:      kubectl.kubernetes.io/restartedAt: 2026-01-12T07:29:40Z\nStatus:           Running\nIP:               10.244.1.39\nIPs:\n  IP:           10.244.1.39\nControlled By:  ReplicaSet/url-shorten-mongodb-75c967659f\nContainers:\n  url-shorten-mongodb:\n    Container ID:  containerd://07c16e832cfdd0420796f8eb043a415432aa6f2d6f4ffe375d6498cce2b57674\n    Image:         docker.io/library/mongo:4.4.6\n    Image ID:      docker.io/library/mongo@sha256:6efa052039903e731e4a5550c68a13c4869ddc93742c716332883fd9c77eb79b\n    Port:          27017/TCP\n    Host Port:     0/TCP\n    Args:\n      --config\n      /social-network-microservices/config/mongod.conf\n    State:          Waiting\n      Reason:       CrashLoopBackOff\n    Last State:     Terminated\n      Reason:       Error\n      Exit Code:    14\n      Started:      Mon, 12 Jan 2026 09:08:15 +0000\n      Finished:     Mon, 12 Jan 2026 09:08:16 +0000\n    Ready:          False\n    Restart Count:  24\n    Environment:    <none>\n    Mounts:\n      /etc/tls from tls-cert (ro)\n      /social-network-microservices/config/mongod.conf from url-shorten-mongodb-config (rw,path=\"mongod.conf\")\n      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-g2wlz (ro)\nConditions:\n  Type                        Status\n  PodReadyToStartContainers   True \n  Initialized                 True \n  Ready                       False \n  ContainersReady             False \n  PodScheduled                True \nVolumes:\n  url-shorten-mongodb-config:\n    Type:      ConfigMap (a volume populated by a ConfigMap)\n    Name:      url-shorten-mongodb\n    Optional:  false\n  tls-cert:\n    Type:        Secret (a volume populated by a Secret)\n    SecretName:  mongodb-tls\n    Optional:    false\n  kube-api-access-g2wlz:\n    Type:                    Projected (a volume that contains injected data from multiple sources)\n    TokenExpirationSeconds:  3607\n    ConfigMapName:           kube-root-ca.crt\n    Optional:                false\n    DownwardAPI:             true\nQoS Class:                   BestEffort\nNode-Selectors:              <none>\nTolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s\n                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s\nEvents:\n  Type     Reason   Age                    From     Message\n  ----     ------   ----                   ----     -------\n  Normal   Pulling  2m13s (x25 over 100m)  kubelet  Pulling image \"docker.io/library/mongo:4.4.6\"\n  Warning  BackOff  37s (x462 over 100m)   kubelet  Back-off restarting failed container url-shorten-mongodb in pod url-shorten-mongodb-75c967659f-2nk99_test-social-network(17b7d298-9375-4302-89d7-dcf182e91091)\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis for get_logs: If mongod is failing immediately due to a startup error (bad config file path, missing dbpath, or permission/volume issue), the container stdout/stderr logs will show the mongod error messages and indicate the precise cause (e.g., missing directory, permission denied, invalid config option). I'll fetch recent logs (200 lines) for the pod to capture the startup sequence.",
+          "tool_calls": [
+            {
+              "name": "get_logs",
+              "args": {
+                "resource_name": "url-shorten-mongodb-75c967659f-2nk99",
+                "resource_type": "pod",
+                "tail": 200,
+                "important": false
+              },
+              "id": "call_UuGus86wpN5Vy9kJ06TTzqX6",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\"t\":{\"$date\":\"2026-01-12T09:08:16.003+00:00\"},\"s\":\"F\",  \"c\":\"NETWORK\",  \"id\":28652,   \"ctx\":\"main\",\"msg\":\"The provided SSL certificate is expired or not yet valid.\"}\n{\"t\":{\"$date\":\"2026-01-12T09:08:16.003+00:00\"},\"s\":\"F\",  \"c\":\"-\",        \"id\":23091,   \"ctx\":\"main\",\"msg\":\"Fatal assertion\",\"attr\":{\"msgid\":28652,\"file\":\"src/mongo/util/net/ssl_manager_openssl.cpp\",\"line\":2269}}\n{\"t\":{\"$date\":\"2026-01-12T09:08:16.003+00:00\"},\"s\":\"F\",  \"c\":\"-\",        \"id\":23092,   \"ctx\":\"main\",\"msg\":\"\\n\\n***aborting after fassert() failure\\n\\n\"}\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "The mongod process in container url-shorten-mongodb is crash-looping because it aborts at startup due to an invalid TLS certificate (the mounted mongodb-tls certificate is expired or not yet valid), causing a fatal SSL assertion and process exit.",
+                "reasoning": "kubectl_describe shows the container repeatedly CrashLoopBackOff with Exit Code 14 and a high restart count; the pod mounts a Secret named mongodb-tls for /etc/tls. Container logs contain a fatal OpenSSL error: \"The provided SSL certificate is expired or not yet valid.\" followed by a fatal assertion in ssl_manager_openssl.cpp and an abort. These two unique data points (pod events/exit code + explicit SSL certificate error in stdout) directly identify the TLS cert validity failure as the root cause."
+              },
+              "id": "call_7slqyC9C5XWtZJgeUO797pir",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    },
+    {
+      "diagnosis": "The hypothesis is refuted: the Service 'url-shorten-mongodb' exists in namespace 'test-social-network', exposes port 27017, and its selector (service=url-shorten-mongodb) resolves to at least one Running pod. Therefore the Service resource is present and correctly selects backend pod(s); a missing Service or selector mismatch is not the root cause of callers being unable to reach the DB.",
+      "reasoning": "kubectl_get returned the Service 'url-shorten-mongodb' with spec.selector {service: \"url-shorten-mongodb\"} and ports mapping port:27017 -> targetPort:27017. get_pods_from_service returned a Running pod 'url-shorten-mongodb-75c967659f-2nk99' in namespace 'test-social-network' as an endpoint for that service. These two unique data points show the Service exists and has endpoints, ruling out a missing Service or selector-port mismatch as the cause.",
+      "task": {
+        "priority": 2,
+        "status": "completed",
+        "investigation_goal": "Verify the Kubernetes Service that should front this MongoDB pod. Hypothesis (grounded in data_dependencies: 'service url-shorten-mongodb doesn't exist in the cluster'): the Service resource is missing or its selector/port does not match the pod, which would cause callers to be unable to reach the DB. Perform a two-sided check: confirm Service existence/config and confirm which pods it endpoints to.",
+        "target_resource": "url-shorten-mongodb (service)",
+        "resource_type": "service",
+        "suggested_tools": [
+          "kubectl_get (service url-shorten-mongodb -n test-social-network)",
+          "get_pods_from_service (service url-shorten-mongodb -n test-social-network)"
+        ]
+      },
+      "insights": [
+        "Service 'url-shorten-mongodb' exists in namespace 'test-social-network' (metadata present and managed by Helm).",
+        "Service spec details: type=ClusterIP, clusterIP=10.96.75.74, ports include TCP 27017 -> targetPort 27017, selector={service: \"url-shorten-mongodb\"}, internalTrafficPolicy=Cluster.",
+        "At least one backend pod (url-shorten-mongodb-75c967659f-2nk99) is present and in Running state; it is selected by the Service.",
+        "Hypothesis that the Service was missing or that its selector/ports did not match any pods is refuted \u2014 the Service exists and has endpoints.",
+        "Implication: the observed inability for callers to reach the DB is not caused by a missing Service or selector mismatch; further investigation should focus on other layers (networking, DNS, pod readiness/probes, application config, NetworkPolicies, or external client routing)."
+      ],
+      "steps_performed": [
+        "Analyzed potential misconfiguration: hypothesized the Service 'url-shorten-mongodb' in namespace 'test-social-network' might be missing or have selector/port issues",
+        "Checked Service 'url-shorten-mongodb' using kubectl_get",
+        "Analyzed Service.spec (selectors, ports, type, clusterIP) from kubectl_get output",
+        "Formulated secondary hypothesis: Service selector might not match any pods",
+        "Checked pods selected by service 'url-shorten-mongodb' using get_pods_from_service",
+        "Analyzed pod list and pod status returned by get_pods_from_service",
+        "Correlated data from kubectl_get and get_pods_from_service to verify Service endpoints",
+        "Submitted final diagnosis using submit_final_diagnosis"
+      ],
+      "tools_stats": {
+        "kubectl_get": 1,
+        "get_pods_from_service": 1,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 1: The Service resource 'url-shorten-mongodb' in namespace 'test-social-network' is missing or its spec (selector or ports) is misconfigured, which would prevent routing to backend MongoDB pods. I'll fetch the Service resource to confirm its existence and inspect selectors/ports.\n\nCalling kubectl_get for the Service now.",
+          "tool_calls": [
+            {
+              "name": "kubectl_get",
+              "args": {
+                "resourceType": "service",
+                "name": "url-shorten-mongodb",
+                "namespace": "test-social-network",
+                "output": "json"
+              },
+              "id": "call_uQrL9SbbRlhdTHCbMHVswzMZ",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n    \"apiVersion\": \"v1\",\n    \"kind\": \"Service\",\n    \"metadata\": {\n        \"annotations\": {\n            \"meta.helm.sh/release-name\": \"social-network\",\n            \"meta.helm.sh/release-namespace\": \"test-social-network\"\n        },\n        \"creationTimestamp\": \"2026-01-12T07:27:41Z\",\n        \"labels\": {\n            \"app.kubernetes.io/managed-by\": \"Helm\"\n        },\n        \"name\": \"url-shorten-mongodb\",\n        \"namespace\": \"test-social-network\",\n        \"resourceVersion\": \"1162\",\n        \"uid\": \"54f71982-88f6-4d1d-a2bb-09b600317720\"\n    },\n    \"spec\": {\n        \"clusterIP\": \"10.96.75.74\",\n        \"clusterIPs\": [\n            \"10.96.75.74\"\n        ],\n        \"internalTrafficPolicy\": \"Cluster\",\n        \"ipFamilies\": [\n            \"IPv4\"\n        ],\n        \"ipFamilyPolicy\": \"SingleStack\",\n        \"ports\": [\n            {\n                \"name\": \"27017\",\n                \"port\": 27017,\n                \"protocol\": \"TCP\",\n                \"targetPort\": 27017\n            }\n        ],\n        \"selector\": {\n            \"service\": \"url-shorten-mongodb\"\n        },\n        \"sessionAffinity\": \"None\",\n        \"type\": \"ClusterIP\"\n    },\n    \"status\": {\n        \"loadBalancer\": {}\n    }\n}\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 2: The Service selector does not match any pod labels in namespace 'test-social-network', so the service will have no endpoints/pods. I'll retrieve pods that belong to the service 'url-shorten-mongodb' to confirm.",
+          "tool_calls": [
+            {
+              "name": "get_pods_from_service",
+              "args": {
+                "service_name": "url-shorten-mongodb"
+              },
+              "id": "call_Qk1uE2hys5jwi1UvbhLxs622",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n  \"service_name\": \"url-shorten-mongodb\",\n  \"namespace\": \"test-social-network\",\n  \"pods\": [\n    {\n      \"pod_name\": \"url-shorten-mongodb-75c967659f-2nk99\",\n      \"pod_status\": \"Running\"\n    }\n  ]\n}"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "The hypothesis is refuted: the Service 'url-shorten-mongodb' exists in namespace 'test-social-network', exposes port 27017, and its selector (service=url-shorten-mongodb) resolves to at least one Running pod. Therefore the Service resource is present and correctly selects backend pod(s); a missing Service or selector mismatch is not the root cause of callers being unable to reach the DB.",
+                "reasoning": "kubectl_get returned the Service 'url-shorten-mongodb' with spec.selector {service: \"url-shorten-mongodb\"} and ports mapping port:27017 -> targetPort:27017. get_pods_from_service returned a Running pod 'url-shorten-mongodb-75c967659f-2nk99' in namespace 'test-social-network' as an endpoint for that service. These two unique data points show the Service exists and has endpoints, ruling out a missing Service or selector-port mismatch as the cause."
+              },
+              "id": "call_2GXuxBCqkTUmLNWGfQJqEBv4",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    }
+  ],
+  "tasks_to_be_executed": [],
+  "final_report": {
+    "root_cause": "MongoDB (mongod) fails to start because it is configured to use a TLS certificate mounted from the Secret 'mongodb-tls' that is invalid (expired or not yet valid). The invalid certificate triggers an OpenSSL fatal assertion during mongod TLS initialization which causes the process to abort immediately and the container to enter CrashLoopBackOff.",
+    "affected_resources": [
+      "pod/url-shorten-mongodb-75c967659f-2nk99 (namespace: test-social-network)",
+      "secret/mongodb-tls (namespace: test-social-network)",
+      "service/url-shorten-mongodb (namespace: test-social-network)",
+      "configmap/mongod.conf (mounted into pod; namespace: test-social-network)"
+    ],
+    "evidence_summary": "kubectl_describe for pod url-shorten-mongodb-75c967659f-2nk99 shows CrashLoopBackOff with RestartCount=24 and Last Terminated Exit Code=14. Container logs (mongod stdout/stderr) include a fatal OpenSSL error message: \"The provided SSL certificate is expired or not yet valid.\" followed by a fatal assertion in ssl_manager_openssl.cpp and an abort. The pod manifest mounts a Secret named 'mongodb-tls' at /etc/tls and also mounts a mongod.conf ConfigMap. A separate check confirmed the Service 'url-shorten-mongodb' exists and selects the failing pod (ruling out a missing Service). These facts correlate to a startup-time TLS certificate validity failure causing immediate mongod termination and repeated restarts.",
+    "investigation_summary": "Priority-1 investigation (completed): collected pod description and container logs for url-shorten-mongodb-75c967659f-2nk99. Observed Exit Code 14, CrashLoopBackOff, explicit OpenSSL certificate validity error and fatal assertion in mongod code. Concluded mongod aborts because the mounted TLS certificate is invalid. Priority-2 investigation (completed): validated the Kubernetes Service 'url-shorten-mongodb' exists and has endpoints (the failing pod), refuting a missing Service/selector mismatch. Lower-priority tasks (workload controller, PV/PVC, callers' config) were planned but are not required to establish the immediate root cause. Evidence is sufficient to conclude the Secret's TLS certificate validity is the proximate cause.",
+    "detection": true,
+    "localization": [
+      "secret/mongodb-tls (namespace: test-social-network)"
+    ]
+  },
+  "prompts_config": {
+    "triage_agent": "You are an expert Site Reliability Engineer. Your mission is to triage a Kubernetes application by analyzing the provided data.\n\nYour analysis must adhere to the following rules:\n1.  **Focus**: Identify symptoms at the **pod or service level only**. Do not provide cluster-wide analysis or generalizations.\n2.  **Aggregation**: For each pod or service that has issues, create **at most one symptom entry**. Aggregate all related evidence (from pods, metrics, traces) into that single entry.\n3.  **Action**: Synthesize the information to identify and list potential symptoms. For each symptom, pinpoint the affected resource (pod or service) and cite the specific evidence.\n4.  **Resource Naming**: In the `affected_resource` field, provide ONLY the exact resource name without any decorators, prefixes, or namespace qualifiers (e.g., use \"geo-6b4b89b5f5-rsrh7\" NOT \"test-hotel-reservation/geo-6b4b89b5f5-rsrh7\").\n5.  **Trace-Only Evidence**: If error traces are the only signals, still produce symptoms by identifying the service (or pod) that owns the failing span and summarizing the suspected issue using the trace error message. Avoid generic \"trace failed\" statements\u2014make the hypothesis explicit (e.g., \"checkout-service may have invalid credentials because trace X shows `401 Unauthorized` calling payment-service\").\n6.  **Empty State**: If the provided data contains no issues, it is correct to return an empty list of symptoms.",
+    "planner_agent": "\nYou are an expert Site Reliability Engineer. Produce a concise, de-duplicated investigation plan where each task inspects a precise part of the infrastructure to surface the most likely root-cause signals and converge on the true RCA quickly.\n\n**Toolkit**\n- `kubectl_get`: list Kubernetes resources and their status\n- `kubectl_describe`: inspect detailed spec/events for a resource\n- `get_pods_from_service`: map services to backing pods\n- `get_cluster_pods_and_services`: snapshot cluster topology\n- `get_logs`: retrieve recent pod or service logs\n- `get_traces`: fetch traces filtered by latency/errors\n- `get_trace`: inspect a single trace end-to-end\n- `get_metrics`: read current CPU/memory/network metrics\n- `get_metrics_range`: compare historical metric windows\n- `get_services_used_by`: discover downstream service calls\n- `get_dependencies`: enumerate external/infra dependencies\n\n**Planning Rules**\n1. For every symptom, classify the dominant failure domain (app, latency, dependency/config, or platform) and craft a single, testable hypothesis per resource.\n2. Use the `data_dependencies` and `infra_dependencies` JSON to ground every hypothesis. Merge overlapping symptoms into one task per resource.\n3. **Connections (non-negotiable):** Always create at least one task that inspects the connection between every pair of affected resources or the epicenter and its downstream dependents. These tasks must perform explicit two-sided checks (e.g., verify `service-a`'s config for `service-b`'s URL **and** inspect `service-b`'s Kubernetes service definition for the matching port/name) to catch login/URL/port misconfigurations.\n\n**Tool Selection**\n- Pick the minimum tool set (ideally one or two calls) needed to prove or disprove the hypothesis. Over-broad tool lists are rejected.\n\n**Priority Policy**\n- Assign unique priorities (1..N).\n- Priority 1 is the most direct epicenter investigation. Immediately after that, schedule the connection-check tasks described above; treat them as top-tier because they frequently surface misconfigurations.\n- Remaining priorities should rank other high-impact hypotheses (shared dependencies, severe crashes) ahead of narrow or low-scope checks.\n",
+    "rca_agent": "\nYou are an expert DevOps engineer performing focused Root Cause Analysis on a Kubernetes service.\n\nInstructions:\n1. Use ONLY the Priority Tools provided in the task. Do not propose or use tools outside this list.\n2. For each tool call, first formulate a clear, testable hypothesis about a possible root cause that can be answered by the result. Avoid broad or exploratory queries.\n3. Each tool call must provide unique, non-overlapping information. Never repeat requests with similar parameters or investigate the same aspect repeatedly in slightly different ways.\n4. Stop investigating, even if you have not reached the budget limit, when you have:\n   - Clear evidence that directly identifies a root cause (or definitively rules one out)\n   - Multiple data points indicating the same failure/cause\n   - Sufficient information to answer the investigation goal\n5. DO NOT:\n   - Repeat or re-run tools unless you are testing a truly new and justified hypothesis\n   - Query outside the given Target or Priority Tools\n   - Investigate unrelated resources or expand scope\n6. When you have gathered sufficient, non-redundant evidence (typically after 2-3 targeted tool calls), call submit_final_diagnosis with:\n   - diagnosis: State the precise root cause as it pertains to the investigation goal\n   - reasoning: Support your diagnosis by referencing unique findings from your tool calls\n\nREMEMBER: Quality over quantity. Focus on unique and conclusive findings rather than exhaustive or repetitive investigation.\n",
+    "supervisor_agent": "You are an expert Site Reliability Engineer analyzing RCA findings to determine the root cause of an incident.\n\nAnalyze all symptoms and investigation findings to:\n1. Identify patterns and correlations across findings\n2. Determine the primary root cause\n3. List all affected resources\n4. Summarize key evidence\n\n**Understanding Task Priority:**\nEach RCA investigation task has been assigned a priority level:\n- Priority 1 = Most important / Most likely to reveal root cause (investigated first)\n- Priority 2, 3, ... = Progressively lower importance\n- Tasks with lower priority numbers should generally have higher weight in your analysis\n- The priority reflects the likelihood that investigating that task/resource would uncover the root cause\n\nUse the priority information to contextualize findings: results from priority 1 tasks are typically more significant for determining root cause than lower priority investigations.\n\n**Detection & Localization Requirements:**\n- **detection**: Set to `true` if any problem/anomaly was detected in the cluster based on the evidence. Set to `false` only if no issues are found.\n- **localization**: Provide a list of ONLY the faulty/problematic components (service names or pod names) directly identified as the root cause. This should be a minimal, precise list - extract ONLY the specific resource(s) that caused the incident, not all affected resources.\n  - Example: If a service \"user-service\" has a misconfiguration causing downstream failures, localization = [\"user-service\"]\n  - Example: If a pod \"database-pod-xyz\" is failing, localization = [\"database-pod-xyz\"]\n  - Leave empty/null if the root cause cannot be localized to a specific service or pod.\n\n**Root Cause Expectations:**\n- Build a causal chain that connects symptoms, investigation evidence, and the precise failure mechanism\n- Cite concrete configuration or runtime details (e.g., \"service expects port 5432 but database listens on 5433\") when diagnosing misconfigurations or integration issues\n- If evidence stops at the symptom level, identify the missing proof and pursue it before finalizing\n\n**Strict Iteration Policy:**\nOnly request another RCA iteration when the existing evidence is insufficient to produce a confident final diagnosis. Never re-run or re-request tasks already marked as completed or currently in progress. When additional work is unavoidable, list only the minimal set of pending task priorities in `tasks_to_be_executed` and clearly justify why each is required. If the current findings support a solid root cause, leave `tasks_to_be_executed` empty and finalize the report.\n\nWhen you need more evidence, ask for the most targeted pending tasks that can close the causal gap (for example, verifying port mappings, credentials, or configuration values at both ends of a failing connection).\n\nProvide a clear, specific root cause statement that explains what caused the incident and why it happened now."
+  },
+  "experiment_name": "A - Plain React P2 B7 - Social Network - MongoDB url-shorten authentication missing (hypothesis-test-hotel-res)",
+  "agent_id": "A",
+  "agent_configuration_name": "A - Plain React P2 B7",
+  "stats": {
+    "run_id": "8223844d-8542-4db2-9299-ae83dc0ed1d0",
+    "experiment_name": "A - Plain React P2 B7 - Social Network - MongoDB url-shorten authentication missing (hypothesis-test-hotel-res)",
+    "status": "success",
+    "execution_time_seconds": 182.272413,
+    "total_tokens": 36753,
+    "total_cost": 0.021864,
+    "langsmith_url": "https://smith.langchain.com/o/abfc6d67-41f7-486b-956b-7589404f3bd1/projects/p/2264bd80-45a8-4ab7-b5b3-23b64980ca6f/r/8223844d-8542-4db2-9299-ae83dc0ed1d0?trace_id=8223844d-8542-4db2-9299-ae83dc0ed1d0&start_time=2026-01-12T09:08:52.134160",
+    "agent_stats": {
+      "supervisor_agent": {
+        "total_tokens": 4960,
+        "input_tokens": 3455,
+        "output_tokens": 1505,
+        "cost": 0.00301,
+        "runs_count": 1
+      },
+      "rca_agent": {
+        "total_tokens": 25089,
+        "input_tokens": 19476,
+        "output_tokens": 5613,
+        "cost": 0.011226,
+        "runs_count": 2
+      },
+      "schedule_rca_tasks": {
+        "total_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost": 0.0,
+        "runs_count": 1
+      },
+      "planner_agent": {
+        "total_tokens": 5185,
+        "input_tokens": 2010,
+        "output_tokens": 3175,
+        "cost": 0.00635,
+        "runs_count": 1
+      },
+      "triage_agent": {
+        "total_tokens": 1519,
+        "input_tokens": 880,
+        "output_tokens": 639,
+        "cost": 0.001278,
+        "runs_count": 1
+      }
+    }
+  },
+  "testbed": {
+    "application_name": [
+      "Social Network"
+    ],
+    "fault_name": "MongoDB url-shorten authentication missing",
+    "target_namespace": "test-social-network",
+    "trace_service_starting_point": "nginx-thrift",
+    "rca_tasks_per_iteration": "2",
+    "max_tool_calls": "7"
+  },
+  "evaluation": {
+    "detection": true,
+    "localization": false,
+    "rca_score": 1,
+    "rca_motivation": "The ground truth is a missing MongoDB authentication configuration in the url-shorten-mongodb service; the agent instead attributes the failure to an invalid TLS certificate causing mongod to crash. This is a different failure mode and root cause, so the analysis is incorrect despite referencing MongoDB."
+  }
+}
