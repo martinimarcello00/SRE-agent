@@ -9,7 +9,7 @@ This system integrates with **AIOpsLab** for realistic fault injection and uses 
 ```
 SRE-agent/
 ├── sre-agent/          # 🧠 Main Multi-Agent System implementation (LangGraph)
-├── MCP-server/         # 🔌 Custom Model Context Protocol server for 
+├── MCP-server/         # 🔌 Custom Model Context Protocol server for observability tools
 ├── notebooks/          # 📓 Jupyter notebooks for analysis and development
 ├── Results/            # 📊 Experiment outputs, logs, and reports
 ├── archive/            # 📦 Archive of previous project iterations
