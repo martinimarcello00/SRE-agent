@@ -1,48 +1,114 @@
 # Agent-Based SRE: Automated Diagnosis and Mitigation in K8s
 
-## Repository Structure
+**sre-agent** is an autonomous multi-agent system designed to automate Incident Response in Kubernetes environments. By leveraging Large Language Models (LLMs) and a **Divide & Conquer** strategy, it significantly reduces the Mean Time to Resolution (MTTR) for complex microservice faults.
+
+This system integrates with **AIOpsLab** for realistic fault injection and uses a custom **Model Context Protocol (MCP)** server to interface with observability tools (Prometheus, Jaeger, Kubernetes API) securely and efficiently.
+
+## 📁 Repository Structure
 
 ```
 SRE-agent/
-├── sre-agent/          # Main SRE agent implementation
-├── MCP-server/         # Model Context Protocol server for observability
-├── notebooks/          # Jupyter notebooks for development and analysis
-├── Results/            # Experiment outputs and reports
-└── archive/            # Previous project iterations
+├── sre-agent/          # 🧠 Main Multi-Agent System implementation (LangGraph)
+├── MCP-server/         # 🔌 Custom Model Context Protocol server for 
+├── notebooks/          # 📓 Jupyter notebooks for analysis and development
+├── Results/            # 📊 Experiment outputs, logs, and reports
+├── archive/            # 📦 Archive of previous project iterations
+└── assets/             # 🖼️ Diagrams and static assets
 ```
 
-## 🤖 SRE Agent
+## 🤖 SRE Agent Architecture
 
-The SRE agent automates incident response in Kubernetes environments through a multi-agent workflow:
+The agent implements a parallel multi-agent workflow to diagnose faults efficiently:
 
-```mermaid
-graph TD
-    Start([Start]) --> Triage[🔍 Triage Agent<br/>Gather observability data]
-    Triage -->|Symptoms List| Planner[📋 Planning Agent<br/>Enrich with dependencies<br/>Create RCA tasks]
-    Planner -.->|Task 1| RCA1[🔬 RCA Agent 1<br/>Tool budget: 8 calls]
-    Planner -.->|Task 2| RCA2[🔬 RCA Agent 2<br/>Tool budget: 8 calls]
-    Planner -.->|Task N| RCAN[🔬 RCA Agent N<br/>Tool budget: 8 calls]
-    RCA1 -->|Diagnostic Report 1| Supervisor[👔 Supervisor Agent<br/>Correlate findings<br/>Synthesize root cause]
-    RCA2 -->|Diagnostic Report 2| Supervisor
-    RCAN -->|Diagnostic Report N| Supervisor
-    Supervisor --> End([End: Final Root Cause])
-    
-    style Triage fill:#e1f5ff,stroke:#0066cc,stroke-width:2px,color:#000
-    style Planner fill:#fff4e1,stroke:#ff9900,stroke-width:2px,color:#000
-    style RCA1 fill:#ffe1f5,stroke:#cc0066,stroke-width:2px,color:#000
-    style RCA2 fill:#ffe1f5,stroke:#cc0066,stroke-width:2px,color:#000
-    style RCAN fill:#ffe1f5,stroke:#cc0066,stroke-width:2px,color:#000
-    style Supervisor fill:#e1ffe1,stroke:#009900,stroke-width:2px,color:#000
-    style Start fill:#f0f0f0,stroke:#333,stroke-width:2px,color:#000
-    style End fill:#f0f0f0,stroke:#333,stroke-width:2px,color:#000
+![SRE Agent Architecture](./assets/sre_agent_architecture.png)
+
+### Core Components
+
+1.  **🔍 Triage Agent (Hybrid)**
+    *   **Role**: Detects symptoms explicitly.
+    *   **Method**: Combines **deterministic heuristics** (based on the Four Golden Signals: Latency, Errors, Saturation) with LLM reasoning. This hybrid approach grounds the diagnosis in hard evidence to minimize hallucinations.
+
+2.  **📋 Planner Agent (Topology-Aware)**
+    *   **Role**: Strategies the investigation.
+    *   **Method**: Uses a **Graph-Based Datagraph** to understand cluster topology (dependencies, upstream services). It generates a deduplicated, prioritized list of **RCA Tasks**, assigning specific investigation goals and target resources.
+
+3.  **🔬 RCA Workers (Parallel Execution)**
+    *   **Role**: Execute the investigation.
+    *   **Method**: **Divide & Conquer**. Multiple workers run in **parallel**, each handling a specific task. They use MCP tools (Logs, Traces, Metrics) to gather evidence and produce a diagnostic report. A deterministic **RCA Router** manages task dispatching.
+
+4.  **👔 Supervisor Agent**
+    *   **Role**: Final Decision Maker.
+    *   **Method**: Aggregates worker reports to synthesize a final Root Cause Analysis. It can either finalize the diagnosis or trigger a feedback loop to schedule pending tasks if more evidence is needed.
+
+### Key Features
+
+*   **Datagraph**: A graph representation of the cluster topology (Infrastructure & Data dependencies) that guides the agent, preventing irrelevant resource exploration.
+*   **Custom MCP Server**: Standardizes tool interaction and performs "pre-digestion" of data (e.g., retrieving only relevant metrics or error logs) to optimize context window usage and reduce token costs.
+
+---
+
+## 🧪 Automated Evaluation Pipeline
+
+The repository includes a robust pipeline for automated experimentation and benchmarking.
+
+### Framework
+*   **Integration**: Built on top of **AIOpsLab** to deploy testbeds (Hotel Reservation, Social Network) and inject realistic faults (Network delays, Pod failures, Misconfigurations).
+*   **Batch Execution**: `automated_experiment.py` orchestrates end-to-end batch runs: Cluster Setup → Fault Injection → Agent Execution → Evaluation → Cleanup.
+
+### Metrics
+The system is evaluated on:
+1.  **Detection Accuracy**: Correct identification of an anomaly.
+2.  **Localization Accuracy**: Correct identification of the root cause resource (Service/Pod).
+3.  **RCA Score**: Semantic evaluation of the diagnosis using **LLM-as-a-Judge** (1-5 scale with rationale).
+
+---
+
+## 🛠️ Setup & Usage
+
+### Prerequisites
+*   **Python 3.13+** & **Poetry**
+*   **Docker** & **Kind** (Kubernetes in Docker)
+*   **Make** (for AIOpsLab commands)
+*   **OpenAI API Key** (for GPT-5-mini)
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/martinimarcello00/SRE-agent.git
+cd SRE-agent
+
+# Install dependencies
+poetry install
+
+# Configure environment
+cp .env.example .env
+# Edit .env and add your API keys:
+# nano .env
 ```
 
-**🔍 Triage Agent**: Gathers metrics, logs, and traces Prometheus, Jaeger, and K8s to quickly identify problematic pods, error traces, slow traces, and anomalous metrics. Analyzes raw observability data and outputs a list of symptoms with affected resources and evidence.
+### Running the Agent
 
-**📋 Planning Agent**: Takes symptoms and enriches them with dependency information (data and infrastructure dependencies). Analyzes correlations and creates a de-duplicated, prioritized list of RCA tasks for parallel investigation. Each task includes investigation goal, target resource, and suggested tools.
+You can run the agent interactively via LangGraph Studio or as a script.
 
-**🔬 RCA Worker Agents**: Execute investigation tasks in parallel. Each worker has a budget of tool calls and autonomously uses MCP tools (kubectl, logs, traces, metrics) to gather evidence. Workers summarize findings after each step and submit a diagnostic report with diagnosis, reasoning, insights, and tool usage stats.
+**Option A: LangGraph Studio (Recommended for Dev)**
+```bash
+cd sre-agent
+poetry run langgraph dev
+```
 
-**👔 Supervisor Agent**: Aggregates all worker reports, correlates findings across investigations, and synthesizes a final root cause diagnosis with affected resources, evidence summary, and investigation overview.
+**Option B: Python Script**
+```bash
+# Run a specific experiment scenario
+python sre-agent/sre-agent.py
+```
 
-The system leverages the MCP server to interface with observability tools and Kubernetes APIs. Parallel execution at investigation (RCA workers) stage significantly speeds up diagnosis. Each run produces a comprehensive JSON report with symptoms, tasks, individual analyses, and final diagnosis.
+### Running Automated Experiments
+
+To execute a batch of experiments defined in your configuration:
+
+```bash
+# Ensure your .env file is configured
+# python automated_experiment.py
+```
+This script will sequentially provision the cluster, inject faults, run the agent, and save the results in `Results/`.
