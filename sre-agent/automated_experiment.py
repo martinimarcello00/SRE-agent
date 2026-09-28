@@ -11,6 +11,8 @@ import datetime
 import json
 import logging
 import os
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -19,7 +21,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from utils import TelegramNotification, get_today_model_usage
-from config import apply_config_overrides, MAX_DAILY_OPENAI_TOKEN_LIMIT, AIOPSLAB_DIR, TRACE_SERVICE_STARTING_POINT
+from config import apply_config_overrides, MAX_DAILY_OPENAI_TOKEN_LIMIT, AIOPSLAB_DIR, TRACE_SERVICE_STARTING_POINT, MCP_CONFIG, get_mcp_config
 from evaluation import evaluate_experiment
 
 # Configure logging for the SRE Agent script
@@ -152,8 +154,6 @@ def main():
     ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
     load_dotenv(dotenv_path=ENV_PATH)
 
-    AIOPSLAB_DIR = "/home/vm-kubernetes/AIOpsLab"
-
     # Get the fault scenarios
     fault_scenarios = load_fault_scenarios()
 
@@ -245,6 +245,10 @@ def main():
         else:
             logger.info("No environment variable overrides specified in scenario config")
 
+        # MCP_CONFIG is built once at import; MCP tools open a new stdio session per call
+        # reading this dict by reference, so refresh its env to pick up the scenario overrides.
+        MCP_CONFIG["cluster_api"]["env"].update(get_mcp_config()["cluster_api"]["env"])
+
         if enable_notifications and telegram_notifier:
             try:
                 telegram_notifier.send_telegram_message(
@@ -277,6 +281,7 @@ def main():
         logger.info("Fault: %s", scenario.get("fault_type", "Unknown Fault"))
 
         cluster_setup_successful = False
+        port_forward = None
         try:
             # Step 1: Update datagraph for this scenario
             logger.info("=== STEP 1: Update Datagraph ===")
@@ -293,6 +298,7 @@ def main():
                 problem_id=scenario["aiopslab_command"],
                 aiopslab_dir=AIOPSLAB_DIR,
                 stream_cli_output=True,
+                setup_timeout=int(scenario.get("setup_timeout", 900)),
             )
 
             if not success:
@@ -315,6 +321,12 @@ def main():
                 continue
             
             cluster_setup_successful = True
+
+            # Optional per-scenario port-forward (e.g. Jaeger in astronomy-shop has no NodePort)
+            if scenario.get("port_forward_command"):
+                logger.info("Starting port-forward: %s", scenario["port_forward_command"])
+                port_forward = subprocess.Popen(scenario["port_forward_command"], shell=True, start_new_session=True)
+                time.sleep(5)
 
             # Import AFTER setup complete, before starting any event loop
             from launch_experiment import run_sre_agent, export_json_results
@@ -501,6 +513,8 @@ def main():
         finally:
             # Step 4: Cleanup (always executed at the end of each scenario iteration)
             logger.info("=== STEP 4: Cleanup ===")
+            if port_forward:
+                os.killpg(port_forward.pid, signal.SIGTERM)
             try:
                 # Cleanup cluster (MCP server cleanup is handled automatically by MultiServerMCPClient)
                 # This runs regardless of setup success to ensure any partial cluster is removed
