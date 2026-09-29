@@ -1,3 +1,4 @@
+import os
 import sys
 import time
 import logging
@@ -192,6 +193,7 @@ def setup_cluster_and_aiopslab(
     stream_cluster_output=False,
     stream_cli_output=False,
     enable_local_registry=True,
+    fault_duration=None,
 ):
     """
     Set up the experiment environment: create kind cluster and initialize AIOpsLab.
@@ -206,6 +208,7 @@ def setup_cluster_and_aiopslab(
         stream_cluster_output: If True, stream kind cluster command output to stdout
         stream_cli_output: If True, stream AIOpsLab CLI output to stdout
         enable_local_registry: If True, configure the cluster to use the local registry
+        fault_duration: Chaos Mesh fault duration in seconds (optional, uses AIOpsLab default if not provided)
         
     Returns:
         bool: True if setup successful, False otherwise
@@ -267,7 +270,12 @@ def setup_cluster_and_aiopslab(
     full_command = f"bash -l -c '{command}'"
     logger.info("Starting CLI with environment: %s", full_command)
     
-    child = pexpect.spawn('/bin/bash', ['-l', '-c', command], encoding='utf-8', timeout=setup_timeout)
+    env = dict(os.environ)
+    if fault_duration:
+        env["AIOPSLAB_FAULT_DURATION"] = f"{int(fault_duration)}s"
+        logger.info("Fault duration override: %s", env["AIOPSLAB_FAULT_DURATION"])
+
+    child = pexpect.spawn('/bin/bash', ['-l', '-c', command], encoding='utf-8', timeout=setup_timeout, env=env)
     if stream_cli_output:
         child.logfile_read = sys.stdout
     

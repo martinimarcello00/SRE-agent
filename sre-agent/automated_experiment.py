@@ -311,6 +311,7 @@ def main():
                 aiopslab_dir=AIOPSLAB_DIR,
                 stream_cli_output=True,
                 setup_timeout=int(scenario.get("setup_timeout", 900)),
+                fault_duration=scenario.get("fault_duration"),
             )
 
             if not success:
