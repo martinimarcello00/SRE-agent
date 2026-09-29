@@ -11,6 +11,8 @@ import datetime
 import json
 import logging
 import os
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -19,7 +21,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from utils import TelegramNotification, get_today_model_usage
-from config import apply_config_overrides, MAX_DAILY_OPENAI_TOKEN_LIMIT, AIOPSLAB_DIR, TRACE_SERVICE_STARTING_POINT
+from config import apply_config_overrides, MAX_DAILY_OPENAI_TOKEN_LIMIT, AIOPSLAB_DIR, TRACE_SERVICE_STARTING_POINT, MCP_CONFIG, get_mcp_config, use_fallback_openai_key
 from evaluation import evaluate_experiment
 
 # Configure logging for the SRE Agent script
@@ -31,6 +33,24 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("mcp.client.streamable_http").setLevel(logging.WARNING)
 
 logger = logging.getLogger("automated_experiment")
+
+
+def has_token_budget() -> bool:
+    """Return True if the active OpenAI key is under the daily limit, switching to the fallback key if needed."""
+    usage = get_today_model_usage(model_name="gpt-5-mini")
+    logger.info(
+        "Current token usage (gpt-5-mini): input=%d, output=%d, total=%d",
+        usage["input_tokens"],
+        usage["output_tokens"],
+        usage["total_tokens"],
+    )
+    if usage["total_tokens"] < MAX_DAILY_OPENAI_TOKEN_LIMIT:
+        return True
+    logger.warning("Token usage exceeded limit %d on the active OpenAI key.", MAX_DAILY_OPENAI_TOKEN_LIMIT)
+    if not use_fallback_openai_key():
+        return False
+    logger.warning("Switched to OPENAI_API_KEY_FALLBACK / OPENAI_ADMIN_API_KEY_FALLBACK.")
+    return has_token_budget()
 
 
 def get_experiment_dir_path(dir_name: str, experiment_path: Optional[str] = None):
@@ -152,8 +172,6 @@ def main():
     ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
     load_dotenv(dotenv_path=ENV_PATH)
 
-    AIOPSLAB_DIR = "/home/vm-kubernetes/AIOpsLab"
-
     # Get the fault scenarios
     fault_scenarios = load_fault_scenarios()
 
@@ -245,6 +263,12 @@ def main():
         else:
             logger.info("No environment variable overrides specified in scenario config")
 
+        # MCP_CONFIG is built once at import; MCP tools open a new stdio session per call
+        # reading this dict by reference, so refresh its env to pick up the scenario overrides.
+        MCP_CONFIG["cluster_api"]["env"].update(get_mcp_config()["cluster_api"]["env"])
+        # Note: the triage agent reads JAEGER_URL once per process (ConfigManager singleton),
+        # so run one application per batch.
+
         if enable_notifications and telegram_notifier:
             try:
                 telegram_notifier.send_telegram_message(
@@ -253,16 +277,8 @@ def main():
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Failed to send Telegram start message: %s", exc)
 
-        pre_run_usage = get_today_model_usage(model_name="gpt-5-mini")
-        logger.info(
-            "Current token usage (gpt-5-mini) before scenario %d: input=%d, output=%d, total=%d",
-            scenario_idx,
-            pre_run_usage["input_tokens"],
-            pre_run_usage["output_tokens"],
-            pre_run_usage["total_tokens"],
-        )
-        if pre_run_usage["total_tokens"] >= MAX_DAILY_OPENAI_TOKEN_LIMIT:
-            logger.error(f"Token usage exceeded limit {MAX_DAILY_OPENAI_TOKEN_LIMIT}. Aborting experiment.")
+        if not has_token_budget():
+            logger.error(f"Token usage exceeded limit {MAX_DAILY_OPENAI_TOKEN_LIMIT} and no fallback key available. Aborting experiment.")
             if enable_notifications and telegram_notifier:
                 try:
                     telegram_notifier.send_telegram_message(
@@ -277,6 +293,7 @@ def main():
         logger.info("Fault: %s", scenario.get("fault_type", "Unknown Fault"))
 
         cluster_setup_successful = False
+        port_forward = None
         try:
             # Step 1: Update datagraph for this scenario
             logger.info("=== STEP 1: Update Datagraph ===")
@@ -293,6 +310,7 @@ def main():
                 problem_id=scenario["aiopslab_command"],
                 aiopslab_dir=AIOPSLAB_DIR,
                 stream_cli_output=True,
+                setup_timeout=int(scenario.get("setup_timeout", 900)),
             )
 
             if not success:
@@ -315,6 +333,12 @@ def main():
                 continue
             
             cluster_setup_successful = True
+
+            # Optional per-scenario port-forward (e.g. Jaeger in astronomy-shop has no NodePort)
+            if scenario.get("port_forward_command"):
+                logger.info("Starting port-forward: %s", scenario["port_forward_command"])
+                port_forward = subprocess.Popen(scenario["port_forward_command"], shell=True, start_new_session=True)
+                time.sleep(5)
 
             # Import AFTER setup complete, before starting any event loop
             from launch_experiment import run_sre_agent, export_json_results
@@ -381,16 +405,8 @@ def main():
 
                     apply_config_overrides(agent_conf)
 
-                    usage = get_today_model_usage(model_name="gpt-5-mini")
-
-                    logger.info(
-                        "Current token usage (gpt-5-mini) before run: input=%d, output=%d, total=%d",
-                        usage["input_tokens"],
-                        usage["output_tokens"],
-                        usage["total_tokens"],
-                    )
-                    if usage["total_tokens"] >= MAX_DAILY_OPENAI_TOKEN_LIMIT:
-                        logger.error(f"Token usage exceeded limit ({MAX_DAILY_OPENAI_TOKEN_LIMIT}). Aborting experiment.")
+                    if not has_token_budget():
+                        logger.error(f"Token usage exceeded limit ({MAX_DAILY_OPENAI_TOKEN_LIMIT}) and no fallback key available. Aborting experiment.")
                         if enable_notifications and telegram_notifier:
                             try:
                                 telegram_notifier.send_telegram_message(
@@ -501,6 +517,8 @@ def main():
         finally:
             # Step 4: Cleanup (always executed at the end of each scenario iteration)
             logger.info("=== STEP 4: Cleanup ===")
+            if port_forward:
+                os.killpg(port_forward.pid, signal.SIGTERM)
             try:
                 # Cleanup cluster (MCP server cleanup is handled automatically by MultiServerMCPClient)
                 # This runs regardless of setup success to ensure any partial cluster is removed

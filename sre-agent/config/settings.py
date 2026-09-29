@@ -1,7 +1,12 @@
 """Configuration and environment settings for SRE Agent."""
+import logging
 import os
+import threading
+
+import openai
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 from typing import Any, Mapping
 
 # Get the path to the root directory of the repository
@@ -15,10 +20,57 @@ import sys
 mcp_server_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../MCP-server'))
 sys.path.insert(0, mcp_server_path)
 
-# LLM Configuration
-GPT5_MINI = ChatOpenAI(model="gpt-5-mini")
+logger = logging.getLogger(__name__)
 
-GPT5_1 = ChatOpenAI(model="gpt-5.1")
+
+class ChatOpenAIWithFallback(ChatOpenAI):
+    """ChatOpenAI that switches to the fallback key and retries once when the quota is exhausted mid-run."""
+
+    # note: only the sync path (_generate) is covered, all agents use .invoke(); override _agenerate if they move to .ainvoke()
+    def _generate(self, *args: Any, **kwargs: Any):
+        key_used = self.openai_api_key
+        try:
+            return super()._generate(*args, **kwargs)
+        except openai.RateLimitError as exc:
+            if exc.code != "insufficient_quota":
+                raise
+            use_fallback_openai_key()
+            # Another parallel worker may have already switched: retry if the key changed
+            if self.openai_api_key == key_used:
+                raise
+            logger.warning("OpenAI quota exhausted mid-run: retrying %s with the fallback key.", self.model_name)
+            return super()._generate(*args, **kwargs)
+
+
+# LLM Configuration
+GPT5_MINI = ChatOpenAIWithFallback(model="gpt-5-mini")
+
+GPT5_1 = ChatOpenAIWithFallback(model="gpt-5.1")
+
+_fallback_lock = threading.Lock()
+
+
+def use_fallback_openai_key() -> bool:
+    """Switch LLM calls to OPENAI_API_KEY_FALLBACK and usage tracking to OPENAI_ADMIN_API_KEY_FALLBACK.
+
+    Returns False if the fallback keys are not configured or already in use.
+    """
+    key = os.environ.get("OPENAI_API_KEY_FALLBACK")
+    admin_key = os.environ.get("OPENAI_ADMIN_API_KEY_FALLBACK")
+    with _fallback_lock:
+        if not key or not admin_key or os.environ.get("OPENAI_API_KEY") == key:
+            return False
+
+        os.environ["OPENAI_API_KEY"] = key
+        os.environ["OPENAI_ADMIN_API_KEY"] = admin_key
+        # Swap the clients in place (agents hold references to these objects),
+        # never leaving them None while parallel workers may be calling them.
+        for llm in (GPT5_MINI, GPT5_1):
+            fresh = ChatOpenAI(model=llm.model_name, api_key=SecretStr(key))
+            llm.root_client, llm.root_async_client = fresh.root_client, fresh.root_async_client
+            llm.client, llm.async_client = fresh.client, fresh.async_client
+            llm.openai_api_key = fresh.openai_api_key
+        return True
 
 # Investigation Budget
 MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", 8))
