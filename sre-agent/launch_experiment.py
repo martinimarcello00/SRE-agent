@@ -134,28 +134,43 @@ def get_experiment_metrics(experiment_name: str, exec_time: float | int) -> dict
     
     # Get all child runs
     child_runs = list(langsmith_client.list_runs(parent_run_id=run.id))
-    
+
+    # Map every LLM run and its ancestors to the models used
+    models_by_run = {}
+    for llm_run in langsmith_client.list_runs(trace_id=run.trace_id, run_type="llm"):
+        model = llm_run.metadata.get("ls_model_name")
+        for run_id in [llm_run.id, *(llm_run.parent_run_ids or [])] if model else []:
+            models_by_run.setdefault(run_id, set()).add(model)
+
     # Aggregate token usage by agent name
     agent_stats = {}
-    
+
     for agent_run in child_runs:
         agent_name = agent_run.name
-        
+
         if agent_name not in agent_stats:
             agent_stats[agent_name] = {
                 "total_tokens": 0,
                 "input_tokens": 0,
                 "output_tokens": 0,
                 "cost": 0.0,
-                "runs_count": 0
+                "runs_count": 0,
+                "execution_time_seconds": 0.0,
+                "models": set()
             }
-        
+
         agent_stats[agent_name]["total_tokens"] += agent_run.total_tokens or 0
         agent_stats[agent_name]["input_tokens"] += (agent_run.input_tokens or 0)
         agent_stats[agent_name]["output_tokens"] += (agent_run.output_tokens or 0)
         agent_stats[agent_name]["cost"] += float((agent_run.completion_cost or 0.0))
         agent_stats[agent_name]["runs_count"] += 1
-    
+        if agent_run.end_time:
+            agent_stats[agent_name]["execution_time_seconds"] += (agent_run.end_time - agent_run.start_time).total_seconds()
+        agent_stats[agent_name]["models"] |= models_by_run.get(agent_run.id, set())
+
+    for stats in agent_stats.values():
+        stats["models"] = sorted(stats["models"])
+
     run_url = getattr(run, "url", None)
 
     # Build final metrics dictionary
