@@ -2,6 +2,7 @@
 import asyncio
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from config import MCP_CONFIG, TOOLS_ALLOWED
+from .hide_flagd import hide_flagd
 
 
 async def get_mcp_tools(mcp_client: MultiServerMCPClient) -> list:
@@ -23,5 +24,5 @@ async def get_mcp_tools(mcp_client: MultiServerMCPClient) -> list:
     return tools
 
 
-_mcp_client = MultiServerMCPClient(MCP_CONFIG)
+_mcp_client = MultiServerMCPClient(MCP_CONFIG, tool_interceptors=[hide_flagd])
 TOOLS = asyncio.run(get_mcp_tools(_mcp_client))

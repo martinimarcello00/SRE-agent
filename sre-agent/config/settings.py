@@ -135,7 +135,7 @@ def get_mcp_config() -> dict:
     return {
         "kubernetes": {
             "command": "npx",
-            "args": ["mcp-server-kubernetes"],
+            "args": ["mcp-server-kubernetes@4.1.7"],  # pinned: hide_flagd relies on its tool argument names
             "transport": "stdio",
             "env": {
                 "ALLOW_ONLY_NON_DESTRUCTIVE_TOOLS": "true"
