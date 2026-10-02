@@ -3,6 +3,7 @@ from prompts import EVALUATION_PROMPT
 from config import GPT5_1
 from utils import get_today_model_usage
 import logging
+import re
 from typing import Optional
 
 GPT5_1_NAME = "gpt-5-2025-08-07"
@@ -25,13 +26,56 @@ def evaluate_detection(fault_scenario: dict, detection: bool)->bool:
     gt_detection = True if target else False
     return gt_detection == detection
 
-def evaluate_localization(fault_scenario: dict, localization: str) -> bool:
+# Fault-injection machinery (flagd feature flags, Chaos Mesh): never a valid faulty service.
+HARNESS = {"flagd", "flagd-ui", "flag", "chaos-mesh"}
+
+# Characters Kubernetes uses for the ReplicaSet hash in pod names (rand.SafeEncodeString): no vowels
+# and no 0/1/3, so a real name segment such as "-proxy" or "-mongodb" is never mistaken for a hash.
+K8S = "bcdfghjklmnpqrstvwxz2456789"
+# Trailing "-<6..10 hash chars>" (ReplicaSet) plus an optional "-<5 chars>" (pod):
+# "geo-6b4b89b5f5-hlpqn" -> "geo", "geo-6b4b89b5f5" -> "geo".
+# ponytail: hashes shorter than 6 chars (~0.02%) are not stripped, lower the bound if one shows up.
+POD_HASH = re.compile(rf"-[{K8S}]{{6,10}}(?:-[a-z0-9]{{5}})?$")
+# Leading "<kind>:" written with a colon, singular or plural: "Pod: x", "deployment:x", "pods: x" -> "x".
+# The "kind/x" form is handled later by keeping the last "/" segment.
+KIND = re.compile(r"^(?:pod|deployment|service|svc|replicaset|statefulset|daemonset|container|namespace"
+                  r"|persistentvolumeclaim|pvc|secret|configmap|endpoints?)s?:\s*")
+# Application prefixes in front of the service name: Hotel container names ("hotel-reserv-geo") and
+# Astronomy Shop names prefixed with the Helm release ("astronomy-shop-adservice", "opentelemetry-demo-ad").
+PREFIX = re.compile(r"^(?:hotel-reserv|astronomy-shop|opentelemetry-demo|otel-demo)-")
+# Generic words dropped from multi-word answers: "the Product Catalog service" -> "product-catalog".
+FILLER = {"the", "a", "an", "service", "microservice", "svc", "deployment", "pod", "pods", "container",
+          "app", "application", "component", "broker", "instance", "workload"}
+
+def normalize_service(name: str) -> str:
+    """'Deployment/Payment-Service', 'pod:payment-7d9f8b6c5-x2k9p', 'Product Catalog service' -> service name."""
+    s = re.split(r"\s[—–-]\s|\s*\(", name.strip().lower(), maxsplit=1)[0]  # cut "(annotation" / " — free text"
+    s = KIND.sub("", s)  # "pod:user-8477d787d8-2nhtl" -> "user-8477d787d8-2nhtl"
+    words = s.split()
+    if len(words) > 1 and all(w.isalpha() for w in words):  # "Product Catalog service" -> product-catalog
+        s = "-".join(w for w in words if w not in FILLER)
+    else:  # "hotel-reserv-geo container in pod geo-..." -> first token
+        s = (words or [""])[0]
+    s = s.rsplit("/", 1)[-1].split(":", 1)[0]  # "ns/pod/x" -> x, "pod/x:container" -> x, "x:50051" -> x
+    s = re.sub(r"^(?:oteldemo|hipstershop)\.", "", s).split(".", 1)[0]  # "oteldemo.AdService", "x.ns.svc"
+    s = PREFIX.sub("", POD_HASH.sub("", s))  # "hotel-reserv-geo-6b4b89b5f5-hlpqn" -> "geo"
+    return re.sub(r"[-_]?(?:service|svc)$", "", s).replace("_", "-")  # "payment-service", "adservice" -> drop suffix
+
+def localized_services(localization: str) -> set[str]:
+    return {normalize_service(x) for x in re.split(r",(?![^()]*\))", localization) if x.strip()}  # commas outside ()
+
+def blamed_harness(localization: str) -> bool:
+    return bool(localized_services(localization) & HARNESS)
+
+def evaluate_localization(fault_scenario: dict, localization: str, any_of: bool = False) -> bool:
     """
     Evaluates whether the localization result matches the ground truth target in the fault scenario.
 
     Args:
         fault_scenario (dict): The fault scenario dictionary, expected to contain a "target" key.
         localization (str): The localization result to evaluate.
+        any_of (bool): True if at least one blamed service must be in accepted_targets (default [target]);
+            False (default) if every blamed service must be.
 
     Returns:
         bool: True if the localization matches the ground truth, False otherwise.
@@ -46,8 +90,12 @@ def evaluate_localization(fault_scenario: dict, localization: str) -> bool:
     if not isinstance(localization, str):
         return False
 
-    # Check if the target is contained in the localization string
-    return target in localization
+    # Exact match on normalized names, compared without hyphens (fraud-detection == frauddetectionservice).
+    # accepted_targets defaults to [target]; harness components such as flagd are never accepted.
+    accepted = fault_scenario.get("accepted_targets") or [target]
+    found = {s.replace("-", "") for s in localized_services(localization)}
+    ok = {normalize_service(a).replace("-", "") for a in accepted}
+    return bool(found & ok) if any_of else bool(found) and found <= ok
 
 def evaluate_rca_analysis(fault_scenario: dict, rca_analysis: str, langsmith_metadata: Optional[dict] = None) -> tuple[Optional[int], str]:
     """
@@ -119,6 +167,10 @@ def evaluate_experiment(fault_scenario: dict, report: dict)-> dict:
 
     evaluation["detection"] = evaluate_detection(fault_scenario, detection)
     evaluation["localization"] = evaluate_localization(fault_scenario, localization_str)
+    evaluation["localization_any"] = evaluate_localization(fault_scenario, localization_str, any_of=True)
+    target = fault_scenario.get("target")
+    evaluation["localization_legacy"] = target in localization_str if target else not localization_str  # old substring rule
+    evaluation["blamed_harness"] = blamed_harness(localization_str)
     evaluation["rca_score"], evaluation["rca_motivation"] = evaluate_rca_analysis(fault_scenario, rca_analtysis, llmJudge_metadata)
 
     return evaluation
