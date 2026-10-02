@@ -42,3 +42,5 @@ assert not loc({"target": "frontend", "accepted_targets": ["frontend"]}, "Fronte
 from evaluation.evaluation import normalize_service as ns
 assert ns("hotel-reserv-geo") == "geo" and ns("user-8477d787d8-frxzx (container: hotel-reserv-user)") == "user"
 assert ns("pod/url-shorten-mongodb-5b6fdb4d8b-b55c8") == "url-shorten-mongodb" and ns("Payment-Service") == "payment"
+assert ns("geo-5f7b9-hlpqn") == "geo" and ns("otel-collector-agent-x7k2p") == "otel-collector-agent"  # 5-char hash, DaemonSet pod
+assert ns("geo-pvc") == "geo-pvc" and ns("Secret/mongodb-tls") == "mongodb-tls" and ns("astronomy-db") == "astronomy-db"

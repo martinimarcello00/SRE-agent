@@ -32,10 +32,11 @@ HARNESS = {"flagd", "flagd-ui", "flag", "chaos-mesh"}
 # Characters Kubernetes uses for the ReplicaSet hash in pod names (rand.SafeEncodeString): no vowels
 # and no 0/1/3, so a real name segment such as "-proxy" or "-mongodb" is never mistaken for a hash.
 K8S = "bcdfghjklmnpqrstvwxz2456789"
-# Trailing "-<6..10 hash chars>" (ReplicaSet) plus an optional "-<5 chars>" (pod):
-# "geo-6b4b89b5f5-hlpqn" -> "geo", "geo-6b4b89b5f5" -> "geo".
-# ponytail: hashes shorter than 6 chars (~0.02%) are not stripped, lower the bound if one shows up.
-POD_HASH = re.compile(rf"-[{K8S}]{{6,10}}(?:-[a-z0-9]{{5}})?$")
+# Trailing "-<5..10 hash chars>" (ReplicaSet) plus an optional "-<5 chars>" (pod):
+# "geo-6b4b89b5f5-hlpqn" -> "geo", "geo-6b4b89b5f5" -> "geo", "otel-collector-agent-x7k2p" -> "otel-collector-agent".
+# ponytail: hashes shorter than 5 chars (1 pod in ~430k) are not stripped; a bound below 4 would cut
+# real suffixes ("geo-pvc" -> "geo", "mongodb-tls" -> "mongodb", "astronomy-db" -> "astronomy").
+POD_HASH = re.compile(rf"-[{K8S}]{{5,10}}(?:-[a-z0-9]{{5}})?$")
 # Leading "<kind>:" written with a colon, singular or plural: "Pod: x", "deployment:x", "pods: x" -> "x".
 # The "kind/x" form is handled later by keeping the last "/" segment.
 KIND = re.compile(r"^(?:pod|deployment|service|svc|replicaset|statefulset|daemonset|container|namespace"
