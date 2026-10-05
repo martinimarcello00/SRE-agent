@@ -4,6 +4,7 @@ import time
 import logging
 import pexpect
 import subprocess
+import urllib.request
 from pathlib import Path
 
 
@@ -12,6 +13,29 @@ logger = logging.getLogger(__name__)
 # Local registry configuration - matches kind official documentation
 LOCAL_REGISTRY_NAME = "kind-registry"
 LOCAL_REGISTRY_PORT = 5001
+# Pull-through caches: upstream host -> (upstream server URL, registry container).
+# One container per upstream (see registry/setup-registry.sh); Astronomy Shop images are mostly on ghcr.io.
+REGISTRY_MIRRORS = {
+    "docker.io": ("https://registry-1.docker.io", LOCAL_REGISTRY_NAME),
+    "ghcr.io": ("https://ghcr.io", f"{LOCAL_REGISTRY_NAME}-ghcr"),
+    "quay.io": ("https://quay.io", f"{LOCAL_REGISTRY_NAME}-quay"),
+}
+
+
+def check_registry_mirrors() -> bool:
+    """Every mirror must be running and answer /v2/: a stopped one silently falls back to the upstream (cache lost)."""
+    ok = True
+    for host, (_, reg) in REGISTRY_MIRRORS.items():
+        port = subprocess.run(["docker", "port", reg, "5000/tcp"], capture_output=True, text=True)
+        try:
+            host_port = port.stdout.splitlines()[0].rsplit(":", 1)[1]
+            with urllib.request.urlopen(f"http://127.0.0.1:{host_port}/v2/", timeout=5) as r:
+                if r.status != 200:
+                    raise OSError(f"HTTP {r.status}")
+        except (IndexError, OSError) as e:
+            logger.error("Registry mirror for %s (%s) is not usable (%s). Start it with: docker start %s", host, reg, e, reg)
+            ok = False
+    return ok
 
 
 def run_command_with_wait(command, timeout=600, encoding='utf-8', stream_output=False, wait_for_string=None):
@@ -96,8 +120,9 @@ def configure_kind_registry(
     logger.info("Connecting registry to kind network")
     try:
         # Connect registry container to kind network if it exists
-        cmd = f"docker network connect {cluster_name} {LOCAL_REGISTRY_NAME} 2>/dev/null || true"
-        subprocess.run(cmd, shell=True, capture_output=True)
+        for _, reg in REGISTRY_MIRRORS.values():
+            cmd = f"docker network connect {cluster_name} {reg} 2>/dev/null || true"
+            subprocess.run(cmd, shell=True, capture_output=True)
         logger.info("Registry connected to kind network")
     except Exception as e:
         logger.warning("Could not connect registry to kind network: %s", e)
@@ -135,30 +160,32 @@ def configure_kind_registry(
             )
             subprocess.run(cmd, shell=True, check=True)
 
-            # 2. Configure docker.io mirror (for transparent caching of standard images)
-            cmd = f"docker exec {worker} mkdir -p /etc/containerd/certs.d/docker.io"
-            subprocess.run(cmd, shell=True, check=True)
+            # 2. Configure transparent mirrors (docker.io, ghcr.io, quay.io)
+            for host, (server, reg) in REGISTRY_MIRRORS.items():
+                cmd = f"docker exec {worker} mkdir -p /etc/containerd/certs.d/{host}"
+                subprocess.run(cmd, shell=True, check=True)
 
-            mirror_config = (
-                f"server = \\\"https://registry-1.docker.io\\\"\n"
-                f"\n"
-                f"[host.\\\"http://{LOCAL_REGISTRY_NAME}:5000\\\"]\n"
-                f"  capabilities = [\\\"pull\\\", \\\"resolve\\\"]\n"
-            )
+                mirror_config = (
+                    f"server = \\\"{server}\\\"\n"
+                    f"\n"
+                    f"[host.\\\"http://{reg}:5000\\\"]\n"
+                    f"  capabilities = [\\\"pull\\\", \\\"resolve\\\"]\n"
+                )
 
-            cmd = (
-                f"docker exec {worker} "
-                f"bash -c \"cat > /etc/containerd/certs.d/docker.io/hosts.toml << 'EOF'\n"
-                f"{mirror_config}"
-                f"EOF\""
-            )
-            subprocess.run(cmd, shell=True, check=True)
-            
+                cmd = (
+                    f"docker exec {worker} "
+                    f"bash -c \"cat > /etc/containerd/certs.d/{host}/hosts.toml << 'EOF'\n"
+                    f"{mirror_config}"
+                    f"EOF\""
+                )
+                subprocess.run(cmd, shell=True, check=True)
+
             logger.info("Worker node %s configured with registry mirror", worker)
         
     except subprocess.CalledProcessError as e:
-        logger.warning("Issue configuring worker nodes: %s", e)
-    
+        logger.error("Issue configuring worker nodes: %s", e)
+        return False
+
     # Step 2: Document the local registry
     logger.info("Documenting local registry in ConfigMap")
     try:
@@ -223,6 +250,9 @@ def setup_cluster_and_aiopslab(
     
     logger.info("AIOpsLab directory: %s", aiopslab_dir)
     
+    if enable_local_registry and not check_registry_mirrors():
+        return False
+
     # Step 1: Create kind cluster
     logger.info("=== STEP 1: Create kind cluster ===")
     
