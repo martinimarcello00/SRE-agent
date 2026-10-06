@@ -5,6 +5,7 @@ from experiments_runner import (
     load_agent_configurations,
 )
 from experiments_runner.automated_datagraph import update_datagraph_for_scenario
+from experiments_runner.readiness import wait_until_ready
 
 import asyncio
 import datetime
@@ -51,6 +52,16 @@ def has_token_budget() -> bool:
         return False
     logger.warning("Switched to OPENAI_API_KEY_FALLBACK / OPENAI_ADMIN_API_KEY_FALLBACK.")
     return has_token_budget()
+
+
+def run_readiness_gate(scenario: dict) -> dict:
+    """Wait for the freshly set-up environment to be healthy; returns the failed checks ({} when ready or bypassed)."""
+    from api.jaeger_api import JaegerAPI  # MCP-server is on sys.path via config; fresh clients: every kind create rewrites the kube-context
+    import requests
+    jaeger = JaegerAPI(jaeger_url=os.environ.get("JAEGER_URL"))
+    prom_url = os.environ.get("PROMETHEUS_SERVER_URL", "http://localhost:32000")
+    prom_up = lambda: bool(requests.get(f"{prom_url}/api/v1/query", params={"query": "up"}, timeout=5).json()["data"]["result"])
+    return wait_until_ready(scenario, jaeger.k8s_client, lambda svc: jaeger.get_jaeger_traces(svc, limit=20, lookback="5m"), prom_up)
 
 
 def get_experiment_dir_path(dir_name: str, experiment_path: Optional[str] = None):
@@ -314,8 +325,18 @@ def main():
                 fault_duration=scenario.get("fault_duration"),
             )
 
+            # Optional per-scenario port-forward (e.g. Jaeger in astronomy-shop has no NodePort)
+            if success and scenario.get("port_forward_command"):
+                logger.info("Starting port-forward: %s", scenario["port_forward_command"])
+                port_forward = subprocess.Popen(scenario["port_forward_command"], shell=True, start_new_session=True)
+                time.sleep(5)
+
+            # Readiness gate: namespace, pods, flag, Jaeger, traces, Prometheus (SKIP_READINESS_GATE=1 bypasses it)
+            gate_failures = run_readiness_gate(scenario) if success else {}
+            success = success and not gate_failures
+
             if not success:
-                logger.error("Setup failed for scenario '%s'; cleaning up cluster before moving to next scenario", scenario.get("scenario", "Unknown Scenario"))
+                logger.error("Setup failed for scenario '%s' (failed readiness checks: %s); cleaning up cluster before moving to next scenario", scenario.get("scenario", "Unknown Scenario"), gate_failures or "none")
                 
                 # Attempt to clean up the cluster even though setup failed
                 try:
@@ -327,19 +348,13 @@ def main():
                 if enable_notifications and telegram_notifier:
                     try:
                         telegram_notifier.send_telegram_message(
-                            f"❌ Setup failed for scenario '{scenario.get('scenario', 'Unknown Scenario')}'. Cluster cleaned up. Skipping to next scenario."
+                            f"❌ Setup failed for scenario '{scenario.get('scenario', 'Unknown Scenario')}'. Failed readiness checks: {gate_failures or 'none'}. Cluster cleaned up. Skipping to next scenario."
                         )
                     except Exception as exc:
                         logger.warning("Failed to send Telegram setup failure message: %s", exc)
                 continue
             
             cluster_setup_successful = True
-
-            # Optional per-scenario port-forward (e.g. Jaeger in astronomy-shop has no NodePort)
-            if scenario.get("port_forward_command"):
-                logger.info("Starting port-forward: %s", scenario["port_forward_command"])
-                port_forward = subprocess.Popen(scenario["port_forward_command"], shell=True, start_new_session=True)
-                time.sleep(5)
 
             # Import AFTER setup complete, before starting any event loop
             from launch_experiment import run_sre_agent, export_json_results
