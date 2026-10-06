@@ -330,19 +330,22 @@ def setup_cluster_and_aiopslab(
             "Initialization includes loading the problem, displaying context, and the first env message",
         )
         
-        child.expect('aiopslab>', timeout=setup_timeout)
-        logger.info("Context displayed")
+        # prompt_toolkit repaints the typed "aiopslab> start ..." line, so 'aiopslab>' can match before
+        # init_problem even starts: wait for the "Environment" panel, printed only after it, then the real prompt
+        child.expect('Environment', timeout=setup_timeout)
+        logger.info("Environment panel displayed (init_problem finished)")
         if child.before:
-            logger.debug("CLI output before context prompt:\n%s", child.before.strip())
+            logger.debug("CLI output before environment panel:\n%s", child.before.strip())
         
-        child.expect('aiopslab>', timeout=setup_timeout)
-        logger.info("Problem fully initialized and ready for actions")
+        child.expect('aiopslab>', timeout=30)
+        logger.info("CLI ready for actions")
         if child.before:
             logger.debug("CLI output before ready prompt:\n%s", child.before.strip())
         
         logger.info("Environment ready")
         logger.info("Problem '%s' initialized", problem_id)
-        logger.info("CLI is running in background. Run your experiments now.")
+        # The CLI is killed (SIGHUP) when child is garbage-collected on return. Intentional: SIGHUP skips AIOpsLab's
+        # atexit fault recovery, so the injected fault stays active. Do not send `exit` or Ctrl-C here.
         logger.info("Call cleanup_cluster() when done.")
         
         return True
