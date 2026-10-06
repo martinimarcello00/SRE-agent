@@ -6,8 +6,9 @@ import logging
 import re
 from typing import Optional
 
-GPT5_1_NAME = "gpt-5-2025-08-07"
+GPT5_1_NAME = "gpt-5.1"  # substring of the dated name the usage API reports (gpt-5.1-2025-11-13)
 GPT5_1_TOKEN_DAILY_LIMIT = 240_000
+NO_ANALYSIS = "No analysis data available"  # literal written by agents/supervisor_agent.py when triage finds no symptoms
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,9 @@ def evaluate_rca_analysis(fault_scenario: dict, rca_analysis: str, langsmith_met
     Returns:
         tuple[Optional[int], str]: A tuple containing the evaluation score (or None on error) and an explanation string.
     """
+    if not rca_analysis.strip() or rca_analysis.strip() == NO_ANALYSIS:
+        return 1, "No analysis was produced; judge not called."
+
     token_usage = get_today_model_usage(model_name=GPT5_1_NAME)
 
     if token_usage["total_tokens"] > GPT5_1_TOKEN_DAILY_LIMIT:
