@@ -1,0 +1,448 @@
+{
+  "app_name": "Astronomy Shop",
+  "app_summary": "An online shop selling astronomy products, based on the OpenTelemetry Demo. It is built with polyglot microservices (Go, Java, .NET, Python, Node.js, Rust, ...) communicating via gRPC and HTTP behind an Envoy frontend-proxy, with Kafka for asynchronous order processing and Valkey as cart store. Supported Operations: View product catalog, Receive product recommendations and ads, Add item to cart, Checkout with selected items, Currency conversion, Process payment, Generate shipping quotes, Send order confirmation emails",
+  "target_namespace": "astronomy-shop",
+  "trace_service_starting_point": "frontend-proxy",
+  "problematic_pods": {
+    "problematic_pods": [],
+    "info": "No problematic pods detected based on status analysis. All pods appear healthy."
+  },
+  "slow_traces": {
+    "error": "The service frontend-proxy does not exist"
+  },
+  "problematic_metrics": {
+    "problematic_metrics": [],
+    "info": "All monitored metrics look healthy; no anomalous values detected."
+  },
+  "problematic_traces": {
+    "error": "The service frontend-proxy does not exist"
+  },
+  "symptoms": [
+    {
+      "potential_symptom": "Service/frontend-proxy is missing or unregistered causing absence of traces and likely observability/routing blindspot",
+      "resource_type": "service",
+      "affected_resource": "frontend-proxy",
+      "evidence": "Trace retrieval failed with: \"Error retrieving slow traces: The service frontend-proxy does not exist\" and \"Error retrieving error traces: The service frontend-proxy does not exist\". Pod status checks report no problematic pods (all pods appear healthy) and all monitored pod metrics look healthy, indicating the issue is specific to the frontend-proxy service registration or discovery rather than pod liveness."
+    }
+  ],
+  "rca_tasks": [
+    {
+      "priority": 1,
+      "status": "in_progress",
+      "investigation_goal": "Domain: platform/config. Hypothesis: The Kubernetes Service resource for frontend-proxy is missing or has no endpoints (deleted/mis-selected), which causes the tracing system to report \u201cservice does not exist\u201d despite healthy pods. Test by confirming the Service object exists, its selector, and reported endpoints in the astronomy-shop namespace.",
+      "target_resource": "frontend-proxy",
+      "resource_type": "service",
+      "suggested_tools": [
+        "kubectl_get",
+        "kubectl_describe"
+      ]
+    },
+    {
+      "priority": 2,
+      "status": "in_progress",
+      "investigation_goal": "Domain: connection/config. Crucial two-sided check. Hypothesis: frontend-proxy's runtime config (env/ConfigMap) contains a backend/service name or port that does not match the Kubernetes Service for the 'frontend' backend, causing routing/registration blindspot. Test by reading frontend-proxy deployment/pod env/ConfigMap for backend URL/ports and comparing to the frontend Service definition (ports, names, targetPort, labels).",
+      "target_resource": "frontend-proxy <-> frontend (connection check)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "kubectl_describe",
+        "kubectl_describe"
+      ]
+    },
+    {
+      "priority": 3,
+      "status": "pending",
+      "investigation_goal": "Domain: app/observability. Hypothesis: frontend-proxy pods are running but not exporting traces (OTEL_SERVICE_NAME missing/mis-set or exporter failing), so the tracing backend has no service registration. Test by listing pods backing frontend-proxy and checking pod logs for OpenTelemetry exporter/agent errors and presence of OTEL_* environment variables.",
+      "target_resource": "frontend-proxy pods",
+      "resource_type": "pod",
+      "suggested_tools": [
+        "get_pods_from_service",
+        "get_logs"
+      ]
+    },
+    {
+      "priority": 4,
+      "status": "pending",
+      "investigation_goal": "Domain: dependency/config. Hypothesis: Downstream services referenced in data_dependencies (frontend, chatbot, image-provider) are absent or unregistered (data_dependencies show empty pods arrays), causing incomplete distributed traces and the tracing UI to not display frontend-proxy. Test by snapshotting cluster pods and services in the astronomy-shop namespace and verifying presence/Pod counts for those services.",
+      "target_resource": "frontend, chatbot, image-provider (dependent services)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_cluster_pods_and_services"
+      ]
+    },
+    {
+      "priority": 5,
+      "status": "pending",
+      "investigation_goal": "Domain: platform/dependency. Hypothesis: The tracing/backend dependency (OTel collector or tracing storage) is misconfigured or the frontend-proxy's service name is registered under a different name; the frontend-proxy may be present but the tracing system lists a different service identifier. Test by enumerating external/infra dependencies and the service registration metadata the cluster reports for tracing consumers.",
+      "target_resource": "tracing / telemetry dependencies",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_dependencies"
+      ]
+    }
+  ],
+  "rca_analyses_list": [
+    {
+      "diagnosis": "The Kubernetes Service resource 'frontend-proxy' does not exist in the astronomy-shop namespace (service object is missing), so there are no Kubernetes Endpoints for it. This absence explains the tracing system's \u201cservice does not exist\u201d reports despite pods being healthy.",
+      "reasoning": "kubectl_get service/frontend-proxy returned 'Resource ... not found' indicating the specific Service is missing. A subsequent kubectl_get listing all Services in the astronomy-shop namespace returned an empty items list, confirming there are no Service objects (including frontend-proxy) present to provide endpoints for the frontend proxy.",
+      "task": {
+        "priority": 1,
+        "status": "completed",
+        "investigation_goal": "Domain: platform/config. Hypothesis: The Kubernetes Service resource for frontend-proxy is missing or has no endpoints (deleted/mis-selected), which causes the tracing system to report \u201cservice does not exist\u201d despite healthy pods. Test by confirming the Service object exists, its selector, and reported endpoints in the astronomy-shop namespace.",
+        "target_resource": "frontend-proxy",
+        "resource_type": "service",
+        "suggested_tools": [
+          "kubectl_get",
+          "kubectl_describe"
+        ]
+      },
+      "insights": [
+        "The Service resource 'frontend-proxy' is missing from the astronomy-shop namespace (kubectl_get service/frontend-proxy returned 'not found').",
+        "There are no Service objects in the astronomy-shop namespace at all (kubectl_get list returned an empty items array).",
+        "Because the Service is absent, there are no Kubernetes Endpoints for frontend-proxy; this explains the tracing system's 'service does not exist' reports.",
+        "Initial hypothesis about a bad selector became irrelevant once the Service absence was confirmed \u2014 the root cause is a missing Service resource rather than selector misconfiguration.",
+        "Observed symptom: tracing reported the service as non-existent despite frontend pods being reported healthy (as noted in the final diagnosis).",
+        "No evidence was found of a Service misconfiguration or endpoint failure; the failure mode is the absence of the Service object itself."
+      ],
+      "steps_performed": [
+        "Checked Service resource 'frontend-proxy' using kubectl_get",
+        "Analyzed kubectl_get response for service/frontend-proxy (error: Resource not found)",
+        "Checked all Service resources in namespace 'astronomy-shop' using kubectl_get",
+        "Analyzed kubectl_get response listing Services in astronomy-shop (returned empty items list)",
+        "Correlated kubectl_get results with tracing system reports indicating 'service does not exist'",
+        "Submitted final diagnosis using submit_final_diagnosis"
+      ],
+      "tools_stats": {
+        "kubectl_get": 2,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 1: The Service object for frontend-proxy is missing or has an incorrect selector. I'll fetch the Service resource to confirm existence and inspect its spec.selector.",
+          "tool_calls": [
+            {
+              "name": "kubectl_get",
+              "args": {
+                "resourceType": "service",
+                "name": "frontend-proxy",
+                "namespace": "astronomy-shop",
+                "output": "json"
+              },
+              "id": "call_1QrSPgNdGljDBfpqChgxFHkn",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Error: ToolException('{\\n  \"error\": \"Resource service/frontend-proxy not found\",\\n  \"status\": \"not_found\"\\n}')\n Please fix your mistakes."
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 2: There is no Service named frontend-proxy in the astronomy-shop namespace; listing all Services in that namespace will confirm absence and show other services present. I'll list Services in astronomy-shop.",
+          "tool_calls": [
+            {
+              "name": "kubectl_get",
+              "args": {
+                "resourceType": "service",
+                "namespace": "astronomy-shop",
+                "output": "json"
+              },
+              "id": "call_hoNKdtOUpuKdIjtUHT7CxUNe",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n  \"items\": []\n}"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "The Kubernetes Service resource 'frontend-proxy' does not exist in the astronomy-shop namespace (service object is missing), so there are no Kubernetes Endpoints for it. This absence explains the tracing system's \u201cservice does not exist\u201d reports despite pods being healthy.",
+                "reasoning": "kubectl_get service/frontend-proxy returned 'Resource ... not found' indicating the specific Service is missing. A subsequent kubectl_get listing all Services in the astronomy-shop namespace returned an empty items list, confirming there are no Service objects (including frontend-proxy) present to provide endpoints for the frontend proxy."
+              },
+              "id": "call_ZVEMePyA1LQlJsNGYGBG2B2M",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    },
+    {
+      "diagnosis": "The expected namespace 'astronomy-shop' and the resources 'frontend-proxy' and 'frontend' are not present in the cluster. Because the namespace does not exist, the two-sided connection/config check cannot be performed \u2014 the frontend proxy and frontend Service are absent (or deployed to a different namespace), causing the observed routing/registration blindspot.",
+      "reasoning": "1) kubectl get namespaces returned the cluster namespaces and did not include 'astronomy-shop' (namespaces: default, kube-system, kube-public, kube-node-lease, local-path-storage).\n2) kubectl describe deployment frontend-proxy --namespace=astronomy-shop returned Resource not found.\n3) kubectl describe service frontend --namespace=astronomy-shop returned Resource not found.\nThese unique findings show the target namespace/resources are missing; therefore the hypothesis about mismatched backend name/port in the proxy cannot be tested until the correct namespace or resources are present.",
+      "task": {
+        "priority": 2,
+        "status": "completed",
+        "investigation_goal": "Domain: connection/config. Crucial two-sided check. Hypothesis: frontend-proxy's runtime config (env/ConfigMap) contains a backend/service name or port that does not match the Kubernetes Service for the 'frontend' backend, causing routing/registration blindspot. Test by reading frontend-proxy deployment/pod env/ConfigMap for backend URL/ports and comparing to the frontend Service definition (ports, names, targetPort, labels).",
+        "target_resource": "frontend-proxy <-> frontend (connection check)",
+        "resource_type": "service",
+        "suggested_tools": [
+          "kubectl_describe",
+          "kubectl_describe"
+        ]
+      },
+      "insights": [
+        "The namespace 'astronomy-shop' does not exist in the cluster (cluster namespaces: default, kube-system, kube-public, kube-node-lease, local-path-storage).",
+        "The Deployment 'frontend-proxy' is absent (resource not found) in the expected namespace 'astronomy-shop'.",
+        "The Service 'frontend' is absent in the expected namespace; an attempt to query it cluster-wide failed due to kubectl constraints, suggesting it is not present or is named/located differently.",
+        "Because the namespace and both resources are missing, the original hypothesis (frontend-proxy misconfigured backend host/port vs. the 'frontend' Service) could not be validated \u2014 there is no local deployment/service to inspect.",
+        "The most likely root cause for the observed routing/registration blindspot is that the expected namespace/resources are missing or deployed under a different name/namespace; investigation cannot proceed until the correct namespace/resources are present or their actual names/locations are identified."
+      ],
+      "steps_performed": [
+        "Checked Deployment 'frontend-proxy' in namespace 'astronomy-shop' using kubectl_describe (returned Resource not found)",
+        "Checked Service 'frontend' in namespace 'astronomy-shop' using kubectl_describe (returned Resource not found)",
+        "Listed Deployments in namespace 'astronomy-shop' using kubectl_get (no deployments returned)",
+        "Listed all Namespaces using kubectl_get (returned: default, kube-system, kube-public, kube-node-lease, local-path-storage)",
+        "Attempted to get Service 'frontend' across all namespaces using kubectl_get --all-namespaces (failed: a resource cannot be retrieved by name across all namespaces)",
+        "Submitted final diagnosis using submit_final_diagnosis summarizing missing namespace/resources issue"
+      ],
+      "tools_stats": {
+        "kubectl_describe": 2,
+        "kubectl_get": 3,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 1: The frontend-proxy Deployment's environment (or mounted ConfigMap) contains a backend host or port (e.g., FRONTEND_BACKEND, BACKEND_URL, or similar) that points to a service name or port that does NOT match the Kubernetes Service named \"frontend\" in namespace astronomy-shop. I'll describe the frontend-proxy Deployment to inspect container env vars, args, and ConfigMap/volume mounts for backend configuration.",
+          "tool_calls": [
+            {
+              "name": "kubectl_describe",
+              "args": {
+                "resourceType": "deployment",
+                "name": "frontend-proxy",
+                "namespace": "astronomy-shop"
+              },
+              "id": "call_K8FWfEzp6JIvLkRX6u14m2Se",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Error: ToolException('{\\n  \"error\": \"Resource deployment/frontend-proxy not found\",\\n  \"status\": \"not_found\"\\n}')\n Please fix your mistakes."
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 2: The Kubernetes Service named \"frontend\" exists in namespace astronomy-shop; describing it will reveal its port(s), targetPort(s), and selector labels to compare with the proxy config later. I'll describe service 'frontend' in namespace 'astronomy-shop'.",
+          "tool_calls": [
+            {
+              "name": "kubectl_describe",
+              "args": {
+                "resourceType": "service",
+                "name": "frontend",
+                "namespace": "astronomy-shop"
+              },
+              "id": "call_WJ7l9jO28Lx3WNebgJ3Oq212",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Error: ToolException('{\\n  \"error\": \"Resource service/frontend not found\",\\n  \"status\": \"not_found\"\\n}')\n Please fix your mistakes."
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 3: The deployment and service resources may use different names than 'frontend-proxy'/'frontend'; listing all Deployments in namespace astronomy-shop will reveal the actual deployment names to inspect. I'll list deployments in that namespace.",
+          "tool_calls": [
+            {
+              "name": "kubectl_get",
+              "args": {
+                "resourceType": "deployments",
+                "namespace": "astronomy-shop",
+                "output": "wide"
+              },
+              "id": "call_FXag4HTLR885SXpCVk7qMCD1",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": ""
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 4: The namespace 'astronomy-shop' may not exist or might be named differently; listing cluster namespaces will confirm whether 'astronomy-shop' exists. I'll list all namespaces.",
+          "tool_calls": [
+            {
+              "name": "kubectl_get",
+              "args": {
+                "resourceType": "namespaces",
+                "output": "wide"
+              },
+              "id": "call_zRdjqo0aiLEbNXqtowAfd96y",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "NAME                 STATUS   AGE\ndefault              Active   62m\nkube-node-lease      Active   62m\nkube-public          Active   62m\nkube-system          Active   62m\nlocal-path-storage   Active   62m\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 5: There is no Kubernetes Service named \"frontend\" anywhere in the cluster (not just the astronomy-shop namespace). I'll query for a service named 'frontend' across all namespaces to confirm.",
+          "tool_calls": [
+            {
+              "name": "kubectl_get",
+              "args": {
+                "resourceType": "service",
+                "name": "frontend",
+                "allNamespaces": true,
+                "output": "wide"
+              },
+              "id": "call_RHfRMby0gKdwpmBhlEnPjHBX",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Error: McpError('MCP error -32603: Failed to execute kubectl get command: MCP error -32603: Failed to get resource: Command failed: kubectl get service frontend --all-namespaces -o wide\\nerror: a resource cannot be retrieved by name across all namespaces\\n')\n Please fix your mistakes."
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "The expected namespace 'astronomy-shop' and the resources 'frontend-proxy' and 'frontend' are not present in the cluster. Because the namespace does not exist, the two-sided connection/config check cannot be performed \u2014 the frontend proxy and frontend Service are absent (or deployed to a different namespace), causing the observed routing/registration blindspot.",
+                "reasoning": "1) kubectl get namespaces returned the cluster namespaces and did not include 'astronomy-shop' (namespaces: default, kube-system, kube-public, kube-node-lease, local-path-storage).\n2) kubectl describe deployment frontend-proxy --namespace=astronomy-shop returned Resource not found.\n3) kubectl describe service frontend --namespace=astronomy-shop returned Resource not found.\nThese unique findings show the target namespace/resources are missing; therefore the hypothesis about mismatched backend name/port in the proxy cannot be tested until the correct namespace or resources are present."
+              },
+              "id": "call_tABKObBiITBCIfcJJAdAnlkc",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    }
+  ],
+  "tasks_to_be_executed": [],
+  "final_report": {
+    "root_cause": "The expected Kubernetes namespace 'astronomy-shop' and its Service object for the frontend proxy were not present in the cluster. Concretely, the Kubernetes Service resource 'frontend-proxy' is missing (namespace 'astronomy-shop' itself is absent), so there are no Kubernetes Endpoints or Service registration for the frontend proxy. As a result the tracing/observability system reports the service as non-existent and routing/registration for the frontend-proxy is effectively blind despite the frontend proxy pods reporting healthy.",
+    "affected_resources": [
+      "namespace/astronomy-shop (missing)",
+      "service/frontend-proxy (Kubernetes Service object missing in astronomy-shop)",
+      "k8s Endpoints for frontend-proxy (absent)",
+      "frontend-proxy pods (running but unregistered/unexposed by a Service)",
+      "service/frontend (expected backend service absent)",
+      "tracing/observability backend (reported 'service does not exist' for frontend-proxy)"
+    ],
+    "evidence_summary": "1) kubectl get namespaces returned only: default, kube-system, kube-public, kube-node-lease, local-path-storage \u2014 the 'astronomy-shop' namespace is not present. 2) kubectl get service/frontend-proxy --namespace=astronomy-shop returned 'Resource ... not found'. 3) kubectl get services in the astronomy-shop namespace returned an empty items list (no Service objects). 4) Tracing UI/queries returned: 'Error retrieving slow traces: The service frontend-proxy does not exist' and 'Error retrieving error traces: The service frontend-proxy does not exist'. 5) Pod-level health checks and pod metrics appeared healthy (pods exist and are running) but there is no Service object to provide Endpoints or Service-level discovery/registration.",
+    "investigation_summary": "Priority-1 investigation (completed) directly tested the platform/config hypothesis: attempted to retrieve the Service 'frontend-proxy' in namespace 'astronomy-shop' and found it absent. This explains the tracing system's 'service does not exist' errors because no Kubernetes Service/Endpoints exist for that logical service name. Priority-2 investigation confirmed the higher-level cause: the expected namespace 'astronomy-shop' itself is not present in the cluster and both the 'frontend-proxy' Deployment/Service and the 'frontend' Service cannot be found. Given these results, downstream hypotheses (misconfigured selectors, mismatched backend ports, OTEL env vars missing, etc.) could not be validated because the resources are absent or deployed in a different name/namespace. No further task runs are required to conclude the root cause: the resources were not present where expected.",
+    "detection": true,
+    "localization": [
+      "service/frontend-proxy (missing in namespace 'astronomy-shop')"
+    ]
+  },
+  "prompts_config": {
+    "triage_agent": "You are an expert Site Reliability Engineer. Your mission is to triage a Kubernetes application by analyzing the provided data.\n\nYour analysis must adhere to the following rules:\n1.  **Focus**: Identify symptoms at the **pod or service level only**. Do not provide cluster-wide analysis or generalizations.\n2.  **Aggregation**: For each pod or service that has issues, create **at most one symptom entry**. Aggregate all related evidence (from pods, metrics, traces) into that single entry.\n3.  **Action**: Synthesize the information to identify and list potential symptoms. For each symptom, pinpoint the affected resource (pod or service) and cite the specific evidence.\n4.  **Resource Naming**: In the `affected_resource` field, provide ONLY the exact resource name without any decorators, prefixes, or namespace qualifiers (e.g., use \"geo-6b4b89b5f5-rsrh7\" NOT \"test-hotel-reservation/geo-6b4b89b5f5-rsrh7\").\n5.  **Trace-Only Evidence**: If error traces are the only signals, still produce symptoms by identifying the service (or pod) that owns the failing span and summarizing the suspected issue using the trace error message. Avoid generic \"trace failed\" statements\u2014make the hypothesis explicit (e.g., \"checkout-service may have invalid credentials because trace X shows `401 Unauthorized` calling payment-service\").\n6.  **Empty State**: If the provided data contains no issues, it is correct to return an empty list of symptoms.",
+    "planner_agent": "You are an expert Site Reliability Engineer. Produce a concise, de-duplicated investigation plan where each task inspects a precise part of the infrastructure to surface the most likely root-cause signals and converge on the true RCA quickly.\n\n**Toolkit**\n- `kubectl_get`: list Kubernetes resources and their status\n- `kubectl_describe`: inspect detailed spec/events for a resource\n- `get_pods_from_service`: map services to backing pods\n- `get_cluster_pods_and_services`: snapshot cluster topology\n- `get_logs`: retrieve recent pod or service logs\n- `get_traces`: fetch traces filtered by latency/errors\n- `get_trace`: inspect a single trace end-to-end\n- `get_metrics`: read current CPU/memory/network metrics\n- `get_metrics_range`: compare historical metric windows\n- `get_services_used_by`: discover downstream service calls\n- `get_dependencies`: enumerate external/infra dependencies\n\n**Planning Rules**\n1. For every symptom, classify the dominant failure domain (app, latency, dependency/config, or platform) and craft a single, testable hypothesis per resource.\n2. Use the `data_dependencies` and `infra_dependencies` JSON to ground every hypothesis. Merge overlapping symptoms into one task per resource.\n3. **Connections & Config (Crucial):** Always create a task to verify the connection strings, Secrets, and ConfigMaps between interacting services (especially for Databases like MongoDB). Misconfigurations in ports or auth are common root causes. These tasks must perform explicit two-sided checks (e.g., verify `service-a`'s config for `service-b`'s URL **and** inspect `service-b`'s Kubernetes service definition for the matching port/name) to catch login/URL/port misconfigurations.\n\n**Tool Selection**\n- Pick the minimum tool set (ideally one or two calls) needed to prove or disprove the hypothesis. Over-broad tool lists are rejected.\n\n**Priority Policy**\n- Assign unique priorities (1..N).\n- Priority 1 is the most direct epicenter investigation. Immediately after that, schedule the connection-check tasks described above; treat them as top-tier because they frequently surface misconfigurations.\n- Remaining priorities should rank other high-impact hypotheses (shared dependencies, severe crashes) ahead of narrow or low-scope checks.\n",
+    "rca_agent": "You are an expert DevOps engineer performing focused Root Cause Analysis on a Kubernetes service.\n\nInstructions:\n1. Start by using the Priority Tools provided in the task. If these tools do not yield conclusive evidence, you are permitted to use other standard discovery tools (like kubectl_describe or get_logs) to unblock the investigation.\n2. For each tool call, first formulate a clear, testable hypothesis about a possible root cause that can be answered by the result. Avoid broad or exploratory queries.\n3. Each tool call must provide unique, non-overlapping information. Never repeat requests with similar parameters or investigate the same aspect repeatedly in slightly different ways.\n4. Stop investigating, even if you have not reached the budget limit, when you have:\n   - Clear evidence that directly identifies a root cause (or definitively rules one out)\n   - Multiple data points indicating the same failure/cause\n   - Sufficient information to answer the investigation goal\n5. DO NOT:\n   - Repeat or re-run tools unless you are testing a truly new and justified hypothesis\n   - Query outside the given Target or Priority Tools\n   - Investigate unrelated resources or expand scope\n6. When you have gathered sufficient, non-redundant evidence (typically after 2-3 targeted tool calls), call submit_final_diagnosis with:\n   - diagnosis: State the precise root cause as it pertains to the investigation goal\n   - reasoning: Support your diagnosis by referencing unique findings from your tool calls\n\nREMEMBER: Quality over quantity. Focus on unique and conclusive findings rather than exhaustive or repetitive investigation.\n",
+    "supervisor_agent": "You are an expert Site Reliability Engineer analyzing RCA findings to determine the root cause of an incident.\n\nAnalyze all symptoms and investigation findings to:\n1. Identify patterns and correlations across findings\n2. Determine the primary root cause\n3. List all affected resources\n4. Summarize key evidence\n\n**Understanding Task Priority:**\nEach RCA investigation task has been assigned a priority level:\n- Priority 1 = Most important / Most likely to reveal root cause (investigated first)\n- Priority 2, 3, ... = Progressively lower importance\n- Tasks with lower priority numbers should generally have higher weight in your analysis\n- The priority reflects the likelihood that investigating that task/resource would uncover the root cause\n\nUse the priority information to contextualize findings: results from priority 1 tasks are typically more significant for determining root cause than lower priority investigations.\n\n**Detection & Localization Requirements:**\n- **detection**: Set to `true` if any problem/anomaly was detected in the cluster based on the evidence. Set to `false` only if no issues are found.\n- **localization**: Provide a list of ONLY the faulty/problematic components (service names or pod names) directly identified as the root cause. This should be a minimal, precise list - extract ONLY the specific resource(s) that caused the incident, not all affected resources.\n  - Example: If a service \"user-service\" has a misconfiguration causing downstream failures, localization = [\"user-service\"]\n  - Example: If a pod \"database-pod-xyz\" is failing, localization = [\"database-pod-xyz\"]\n  - Leave empty/null if the root cause cannot be localized to a specific service or pod.\n\n**Root Cause Expectations:**\n- Build a causal chain that connects symptoms, investigation evidence, and the precise failure mechanism\n- Cite concrete configuration or runtime details (e.g., \"service expects port 5432 but database listens on 5433\") when diagnosing misconfigurations or integration issues\n- If evidence stops at the symptom level, identify the missing proof and pursue it before finalizing\n\n**Strict Iteration Policy:**\nOnly request another RCA iteration when the existing evidence is insufficient to produce a confident final diagnosis. Never re-run or re-request tasks already marked as completed or currently in progress. When additional work is unavoidable, list only the minimal set of pending task priorities in `tasks_to_be_executed` and clearly justify why each is required. If the current findings support a solid root cause, leave `tasks_to_be_executed` empty and finalize the report.\n\nWhen you need more evidence, ask for the most targeted pending tasks that can close the causal gap (for example, verifying port mappings, credentials, or configuration values at both ends of a failing connection).\n\nProvide a clear, specific root cause statement that explains what caused the incident and why it happened now."
+  },
+  "experiment_name": "L - Improved Plain React P2 B15 - Astronomy Shop - Ad service failure (astronomy-all-agents-05-10-26)",
+  "agent_id": "L",
+  "agent_configuration_name": "L - Improved Plain React P2 B15",
+  "stats": {
+    "run_id": "01a10e2a-1eab-7ae1-8850-4f1c6eca54b4",
+    "experiment_name": "L - Improved Plain React P2 B15 - Astronomy Shop - Ad service failure (astronomy-all-agents-05-10-26)",
+    "status": "success",
+    "execution_time_seconds": 104.756398,
+    "total_tokens": 40915,
+    "total_cost": 0.024112,
+    "langsmith_url": "https://smith.langchain.com/o/c6e347a7-d8e4-4610-b18c-5a37e9448bb6/projects/p/9d66e647-0a32-4360-8198-97ce7fda45ac/r/01a10e2a-1eab-7ae1-8850-4f1c6eca54b4?trace_id=01a10e2a-1eab-7ae1-8850-4f1c6eca54b4&start_time=2026-10-05T22:23:23.819389",
+    "agent_stats": {
+      "supervisor_agent": {
+        "total_tokens": 4502,
+        "input_tokens": 3186,
+        "output_tokens": 1316,
+        "cost": 0.002632,
+        "runs_count": 1,
+        "execution_time_seconds": 12.504458,
+        "models": [
+          "gpt-5-mini"
+        ]
+      },
+      "rca_agent": {
+        "total_tokens": 30752,
+        "input_tokens": 23845,
+        "output_tokens": 6907,
+        "cost": 0.013814,
+        "runs_count": 2,
+        "execution_time_seconds": 103.313783,
+        "models": [
+          "gpt-5-mini"
+        ]
+      },
+      "schedule_rca_tasks": {
+        "total_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost": 0.0,
+        "runs_count": 1,
+        "execution_time_seconds": 0.001925,
+        "models": []
+      },
+      "planner_agent": {
+        "total_tokens": 4001,
+        "input_tokens": 1095,
+        "output_tokens": 2906,
+        "cost": 0.005812,
+        "runs_count": 1,
+        "execution_time_seconds": 19.668862,
+        "models": [
+          "gpt-5-mini"
+        ]
+      },
+      "triage_agent": {
+        "total_tokens": 1660,
+        "input_tokens": 733,
+        "output_tokens": 927,
+        "cost": 0.001854,
+        "runs_count": 1,
+        "execution_time_seconds": 8.641703,
+        "models": [
+          "gpt-5-mini"
+        ]
+      }
+    }
+  },
+  "testbed": {
+    "application_name": [
+      "Astronomy Shop"
+    ],
+    "fault_name": "Ad service failure",
+    "target_namespace": "astronomy-shop",
+    "trace_service_starting_point": "frontend-proxy",
+    "rca_tasks_per_iteration": "2",
+    "max_tool_calls": "15"
+  },
+  "evaluation": {
+    "detection": true,
+    "localization": false,
+    "localization_any": false,
+    "localization_legacy": false,
+    "blamed_harness": false,
+    "rca_score": 1,
+    "rca_motivation": "Ground truth is about the 'ad' service returning gRPC UNAVAILABLE for GetAds requests, causing frontend ads to fail. The agent instead talks about a missing Kubernetes namespace and Service for a frontend proxy, which is a completely different component and cause, with no relation to gRPC UNAVAILABLE from the ad service."
+  }
+}
