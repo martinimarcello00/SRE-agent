@@ -168,6 +168,7 @@ async def run_experiment(
     output_dir_path.mkdir(parents=True, exist_ok=True)
     output_file_path = output_dir_path / output_file
 
+    enriched_result["jaeger_start_us"] = os.environ.get("JAEGER_START_US")
     enriched_result["evaluation"] = evaluate_experiment(fault_scenario,enriched_result)
 
     with open(output_file_path, "w") as f:
@@ -334,6 +335,8 @@ def main():
             # Readiness gate: namespace, pods, flag, Jaeger, traces, Prometheus (SKIP_READINESS_GATE=1 bypasses it)
             gate_failures = run_readiness_gate(scenario) if success else {}
             success = success and not gate_failures
+            if success:  # Jaeger ignores lookback: from now on the agent queries only traces newer than this instant
+                os.environ["JAEGER_START_US"] = MCP_CONFIG["cluster_api"]["env"]["JAEGER_START_US"] = str(time.time_ns() // 1000)
 
             if not success:
                 logger.error("Setup failed for scenario '%s' (failed readiness checks: %s); cleaning up cluster before moving to next scenario", scenario.get("scenario", "Unknown Scenario"), gate_failures or "none")
