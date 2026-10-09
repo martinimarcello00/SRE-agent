@@ -1,0 +1,436 @@
+{
+  "app_name": "Astronomy Shop",
+  "app_summary": "An online shop selling astronomy products, based on the OpenTelemetry Demo. It is built with polyglot microservices (Go, Java, .NET, Python, Node.js, Rust, ...) communicating via gRPC and HTTP behind an Envoy frontend-proxy, with Kafka for asynchronous order processing and Valkey as cart store. Supported Operations: View product catalog, Receive product recommendations and ads, Add item to cart, Checkout with selected items, Currency conversion, Process payment, Generate shipping quotes, Send order confirmation emails",
+  "target_namespace": "astronomy-shop",
+  "trace_service_starting_point": "frontend-proxy",
+  "problematic_pods": {
+    "problematic_pods": [],
+    "info": "No problematic pods detected based on status analysis. All pods appear healthy."
+  },
+  "slow_traces": {
+    "service": "frontend-proxy",
+    "traces": [],
+    "info": "No traces found for service 'frontend-proxy' with a minimum duration of 2000ms in the last 15m."
+  },
+  "problematic_metrics": {
+    "problematic_metrics": [],
+    "info": "All monitored metrics look healthy; no anomalous values detected."
+  },
+  "problematic_traces": {
+    "service": "frontend-proxy",
+    "traces": [
+      {
+        "traceID": "18b62b1f48b0cd66e419511d910bff86",
+        "latency_ms": 15.0,
+        "has_error": true,
+        "sequence": "frontend-web -> frontend-proxy -> frontend",
+        "error_message": "fetch failed; connect ECONNREFUSED 10.96.249.217:8080"
+      },
+      {
+        "traceID": "e6dc77193bef6c1b916d735474604242",
+        "latency_ms": 25.0,
+        "has_error": true,
+        "sequence": "frontend-web -> frontend -> frontend-proxy -> frontend",
+        "error_message": "fetch failed; connect ECONNREFUSED 10.96.249.217:8080"
+      }
+    ],
+    "traces_count": 2
+  },
+  "symptoms": [
+    {
+      "potential_symptom": "frontend-proxy encountering connection refusals when calling backend (ECONNREFUSED to 10.96.249.217:8080).",
+      "resource_type": "service",
+      "affected_resource": "frontend-proxy",
+      "evidence": "traces_count=2; traceID=18b62b1f48b0cd66e419511d910bff86 (latency_ms=15.0, sequence='frontend-web -> frontend-proxy -> frontend', error_message='fetch failed; connect ECONNREFUSED 10.96.249.217:8080'), traceID=e6dc77193bef6c1b916d735474604242 (latency_ms=25.0, sequence='frontend-web -> frontend -> frontend-proxy -> frontend', error_message='fetch failed; connect ECONNREFUSED 10.96.249.217:8080')"
+    }
+  ],
+  "rca_tasks": [
+    {
+      "priority": 1,
+      "status": "in_progress",
+      "investigation_goal": "Epicenter check: verify frontend-proxy pods and runtime logs for immediate ECONNREFUSED failures and misconfiguration (does proxy pod show connect errors and which backend address is used?). Hypothesis: frontend-proxy (Envoy) is emitting connection refusals because it is attempting to reach a backend IP/port that is unreachable or misconfigured.",
+      "target_resource": "frontend-proxy",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_pods_from_service(frontend-proxy)",
+        "get_logs(<frontend-proxy-pod>)"
+      ]
+    },
+    {
+      "priority": 2,
+      "status": "in_progress",
+      "investigation_goal": "Connection check: verify frontend-proxy -> frontend configuration and frontend service definition (two-sided). Hypothesis: frontend-proxy is configured to call ClusterIP 10.96.249.217:8080 (or a wrong port/name) while the frontend Service exposes a different port/name or has no endpoints.",
+      "target_resource": "frontend <-> frontend-proxy (connection)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_services_used_by(frontend-proxy)",
+        "kubectl_describe service/frontend -n astronomy-shop"
+      ]
+    },
+    {
+      "priority": 3,
+      "status": "pending",
+      "investigation_goal": "Connection check: verify frontend-proxy -> chatbot configuration and chatbot Service definition (two-sided). Hypothesis: frontend-proxy may have incorrect target for chatbot (wrong service name/port) causing potential intermittent connection failures.",
+      "target_resource": "chatbot <-> frontend-proxy (connection)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_services_used_by(frontend-proxy)",
+        "kubectl_describe service/chatbot -n astronomy-shop"
+      ]
+    },
+    {
+      "priority": 4,
+      "status": "pending",
+      "investigation_goal": "Connection check: verify frontend-proxy -> image-provider configuration and image-provider Service definition (two-sided). Hypothesis: frontend-proxy may be calling an incorrect address/port for image-provider causing connection refusals for image requests.",
+      "target_resource": "image-provider <-> frontend-proxy (connection)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_services_used_by(frontend-proxy)",
+        "kubectl_describe service/image-provider -n astronomy-shop"
+      ]
+    },
+    {
+      "priority": 5,
+      "status": "pending",
+      "investigation_goal": "Inspect frontend pod(s): confirm frontend pod existence, Ready state, and that the container is listening on expected port (8080) and not crashing. Hypothesis: frontend pod either missing, not Ready, crashed, or not listening on 8080 causing ECONNREFUSED to the ClusterIP.",
+      "target_resource": "frontend-559ccb996b-9qp8c",
+      "resource_type": "pod",
+      "suggested_tools": [
+        "get_pods_from_service(frontend)",
+        "get_logs(frontend-559ccb996b-9qp8c -n astronomy-shop)"
+      ]
+    },
+    {
+      "priority": 6,
+      "status": "pending",
+      "investigation_goal": "Cluster/networking snapshot: verify kube-proxy/endpoints controller and general cluster service routing health (are Endpoint objects / kube-proxy pods healthy?). Hypothesis: a platform-level issue (endpoints/kube-proxy) is preventing ClusterIP -> pod routing, causing ECONNREFUSED to service IPs.",
+      "target_resource": "cluster networking / endpoints",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_cluster_pods_and_services -n astronomy-shop"
+      ]
+    }
+  ],
+  "rca_analyses_list": [
+    {
+      "diagnosis": "No evidence that frontend-proxy (Envoy) is emitting ECONNREFUSED; Envoy initialized all clusters and started admin server \u2014 no upstream connect errors found in recent logs.",
+      "reasoning": "Pod frontend-proxy-55b6b6c7d9-gbhp8 is Running. Envoy logs (last 1000 lines) show 'loading 13 cluster(s)' and 'all clusters initialized' and 'Starting admin HTTP server at 0.0.0.0:10000' with no occurrences of ECONNREFUSED or upstream connect errors; no backend IP:port reported as unreachable.",
+      "task": {
+        "priority": 1,
+        "status": "completed",
+        "investigation_goal": "Epicenter check: verify frontend-proxy pods and runtime logs for immediate ECONNREFUSED failures and misconfiguration (does proxy pod show connect errors and which backend address is used?). Hypothesis: frontend-proxy (Envoy) is emitting connection refusals because it is attempting to reach a backend IP/port that is unreachable or misconfigured.",
+        "target_resource": "frontend-proxy",
+        "resource_type": "service",
+        "suggested_tools": [
+          "get_pods_from_service(frontend-proxy)",
+          "get_logs(<frontend-proxy-pod>)"
+        ]
+      },
+      "insights": [
+        "Service 'frontend-proxy' had a single pod running: frontend-proxy-55b6b6c7d9-gbhp8 (Pod status: Running)",
+        "No evidence of upstream connection refusals (ECONNREFUSED) in the pod logs examined (last ~1000 lines); no backend IP:port or cluster reported as unreachable",
+        "Envoy in the pod completed startup: loading 13 clusters, 'all clusters initialized', and started admin HTTP server at 0.0.0.0:10000 \u2014 indicates Envoy successfully initialized its clusters during the observed period",
+        "Logs contained warnings but not failures: a deprecated cluster field ('dns_failure_refresh_rate') and a warning about no configured global_downstream_max_connections resource monitor \u2014 both are warnings, not immediate connection failures",
+        "Hypothesis that the frontend-proxy pod logs would show ECONNREFUSED was disproven by the log review",
+        "Investigation scope limitation: conclusions are based on the single frontend-proxy pod's logs and the recent tail examined; absence of errors in these logs does not rule out upstream/network issues outside the captured timeframe or on other nodes/components"
+      ],
+      "steps_performed": [
+        "Checked pods for service 'frontend-proxy' (namespace: astronomy-shop) using get_pods_from_service",
+        "Checked recent important logs (tail 500) of pod 'frontend-proxy-55b6b6c7d9-gbhp8' using get_logs",
+        "Analyzed important-filtered pod logs for upstream connection errors (ECONNREFUSED) and backend addresses",
+        "Checked full recent logs (tail 1000) of pod 'frontend-proxy-55b6b6c7d9-gbhp8' using get_logs",
+        "Analyzed full pod logs for Envoy startup sequence, cluster initialization, admin server startup, and any upstream connection errors",
+        "Correlated pod status (from get_pods_from_service) with log contents (from get_logs) to assess runtime health",
+        "Submitted final diagnosis using submit_final_diagnosis"
+      ],
+      "tools_stats": {
+        "get_pods_from_service": 1,
+        "get_logs": 2,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis for get_pods_from_service: The 'frontend-proxy' service in namespace 'astronomy-shop' has one or more pods; retrieving them will identify the specific pod name(s) to inspect logs for ECONNREFUSED errors. I'll fetch pods for service 'frontend-proxy'.",
+          "tool_calls": [
+            {
+              "name": "get_pods_from_service",
+              "args": {
+                "service_name": "frontend-proxy"
+              },
+              "id": "call_w23o27f7RCk1EdW9KMt10F3Z",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n  \"service_name\": \"frontend-proxy\",\n  \"namespace\": \"astronomy-shop\",\n  \"pods\": [\n    {\n      \"pod_name\": \"frontend-proxy-55b6b6c7d9-gbhp8\",\n      \"pod_status\": \"Running\"\n    }\n  ]\n}"
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis for get_logs: The frontend-proxy pod logs will contain ERROR/WARN lines showing \"ECONNREFUSED\" and include the backend address (IP:port or cluster service name) that Envoy attempted to connect to. I'll fetch recent important log lines from the pod.",
+          "tool_calls": [
+            {
+              "name": "get_logs",
+              "args": {
+                "resource_name": "frontend-proxy-55b6b6c7d9-gbhp8",
+                "resource_type": "pod",
+                "tail": 500,
+                "important": true
+              },
+              "id": "call_2o8xXTkEU8yNiiEWDsxKLtOs",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Found 16 important log entries:\n\n[2026-10-09 11:22:27.275][15][info][main] [source/server/server.cc:467] initializing epoch 0 (base id=0, hot restart version=11.104)\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.connection_handler: envoy.connection_handler.default\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   quic.http_server_connection: quic.http_server_connection.default\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.resolvers: envoy.ip, envoy.resolvers.reverse_connection\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.quic.connection_id_generator: envoy.quic.connection_id_generator.quic_lb, envoy.quic.deterministic_connection_id_generator\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.quic.connection_debug_visitor: envoy.quic.connection_debug_visitor.basic, envoy.quic.connection_debug_visitor.quic_stats\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   filter_state.object: envoy.filters.listener.original_dst.local_ip, envoy.filters.listener.original_dst.remote_ip, envoy.hashable_string, envoy.network.application_protocols, envoy.network.ip, envoy.network.network_namespace, envoy.network.transport_socket.http_11_proxy.info, envoy.network.transport_socket.original_dst_address, envoy.network.upstream_server_name, envoy.network.upstream_subject_alt_names, envoy.ratelimit.hits_addend, envoy.router.debug_config, envoy.string, envoy.tcp_proxy.cluster, envoy.tcp_proxy.disable_tunneling, envoy.tcp_proxy.per_connection_idle_timeout_ms, envoy.upstream.dynamic_host, envoy.upstream.dynamic_port\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.clusters: envoy.cluster.dns, envoy.cluster.eds, envoy.cluster.logical_dns, envoy.cluster.original_dst, envoy.cluster.static, envoy.cluster.strict_dns, envoy.clusters.aggregate, envoy.clusters.composite, envoy.clusters.dynamic_forward_proxy, envoy.clusters.dynamic_modules, envoy.clusters.mcp_multicluster, envoy.clusters.redis, envoy.clusters.reverse_connection\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   network.connection.client: default, envoy_internal\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.upstreams: envoy.filters.connection_pools.tcp.generic\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.filters.network: envoy.echo, envoy.ext_authz, envoy.filters.network.connection_limit, envoy.filters.network.direct_response, envoy.filters.network.dubbo_proxy, envoy.filters.network.dynamic_modules, envoy.filters.network.echo, envoy.filters.network.ext_authz, envoy.filters.network.ext_proc, envoy.filters.network.generic_proxy, envoy.filters.network.geoip, envoy.filters.network.http_connection_manager, envoy.filters.network.local_ratelimit, envoy.filters.network.mongo_proxy, envoy.filters.network.ratelimit, envoy.filters.network.rbac, envoy.filters.network.redis_proxy, envoy.filters.network.reverse_tunnel, envoy.filters.network.reverse_tunnel_drain_aware_http_connection_manager, envoy.filters.network.set_filter_state, envoy.filters.network.sni_cluster, envoy.filters.network.sni_dynamic_forward_proxy, envoy.filters.network.tcp_bandwidth_limit, envoy.filters.network.tcp_proxy, envoy.filters.network.thrift_proxy, envoy.filters.network.wasm, envoy.filters.network.zookeeper_proxy, envoy.http_connection_manager, envoy.mongo_proxy, envoy.ratelimit, envoy.redis_proxy, envoy.tcp_proxy\n[2026-10-09 11:22:27.282][15][warning][misc] [source/common/protobuf/message_validator_impl.cc:23] Deprecated field: type envoy.config.cluster.v3.Cluster Using deprecated option 'envoy.config.cluster.v3.Cluster.dns_failure_refresh_rate' from file cluster.proto. This configuration will be removed from Envoy soon. Please see https://www.envoyproxy.io/docs/envoy/latest/version_history/version_history for details. If continued use of this field is absolutely necessary, see https://www.envoyproxy.io/docs/envoy/latest/configuration/operations/runtime#using-runtime-overrides-for-deprecated-features for how to apply a temporary and highly discouraged override.\n[2026-10-09 11:22:27.283][15][info][main] [source/server/server.cc:534]   request header map: 664 bytes: :authority,:method,:path,:protocol,:scheme,accept,accept-encoding,access-control-request-headers,access-control-request-method,access-control-request-private-network,authentication,authorization,cache-control,cdn-loop,connection,content-encoding,content-length,content-type,expect,grpc-accept-encoding,grpc-timeout,if-match,if-modified-since,if-none-match,if-range,if-unmodified-since,keep-alive,origin,pragma,proxy-connection,proxy-status,referer,te,transfer-encoding,upgrade,user-agent,via,x-client-trace-id,x-envoy-attempt-count,x-envoy-decorator-operation,x-envoy-downstream-service-cluster,x-envoy-downstream-service-node,x-envoy-expected-rq-timeout-ms,x-envoy-external-address,x-envoy-force-trace,x-envoy-hedge-on-per-try-timeout,x-envoy-internal,x-envoy-ip-tags,x-envoy-is-timeout-retry,x-envoy-max-retries,x-envoy-original-host,x-envoy-original-path,x-envoy-original-url,x-envoy-retriable-header-names,x-envoy-retriable-status-codes,x-envoy-retry-grpc-on,x-envoy-retry-on,x-envoy-upstream-alt-stat-name,x-envoy-upstream-rq-per-try-timeout-ms,x-envoy-upstream-rq-timeout-alt-response,x-envoy-upstream-rq-timeout-ms,x-envoy-upstream-stream-duration-ms,x-forwarded-client-cert,x-forwarded-for,x-forwarded-host,x-forwarded-port,x-forwarded-proto,x-request-id\n[2026-10-09 11:22:27.283][15][info][main] [source/server/server.cc:534]   response header map: 432 bytes: :status,access-control-allow-credentials,access-control-allow-headers,access-control-allow-methods,access-control-allow-origin,access-control-allow-private-network,access-control-expose-headers,access-control-max-age,age,cache-control,connection,content-encoding,content-length,content-type,date,etag,expires,grpc-message,grpc-status,keep-alive,last-modified,location,proxy-connection,proxy-status,server,transfer-encoding,upgrade,vary,via,x-envoy-attempt-count,x-envoy-decorator-operation,x-envoy-degraded,x-envoy-immediate-health-check-fail,x-envoy-ratelimited,x-envoy-upstream-canary,x-envoy-upstream-healthchecked-cluster,x-envoy-upstream-service-time,x-request-id\n              connection_limit: 10000\n[2026-10-09 11:22:27.326][15][warning][main] [source/server/server.cc:1038] There is no configured limit to the number of allowed active downstream connections. Configure a limit in `envoy.resource_monitors.global_downstream_max_connections` resource monitor."
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis for get_logs (full): Important-filtered logs didn't show connection refusals; the full recent logs (larger tail, no filtering) will include upstream connection errors with the exact backend IP:port or cluster name Envoy attempted to contact. I'll retrieve the last 1000 log lines from the pod without the important filter.",
+          "tool_calls": [
+            {
+              "name": "get_logs",
+              "args": {
+                "resource_name": "frontend-proxy-55b6b6c7d9-gbhp8",
+                "resource_type": "pod",
+                "tail": 1000,
+                "important": false
+              },
+              "id": "call_tQ2AS3AqroFUbs6Tr0u78Rwq",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "[2026-10-09 11:22:27.275][15][info][main] [source/server/server.cc:467] initializing epoch 0 (base id=0, hot restart version=11.104)\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:469] statically linked extensions:\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.compression.decompressor: envoy.compression.brotli.decompressor, envoy.compression.gzip.decompressor, envoy.compression.zstd.decompressor\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.http.stateful_session: envoy.http.stateful_session.cookie, envoy.http.stateful_session.envelope, envoy.http.stateful_session.header\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.retry_host_predicates: envoy.retry_host_predicates.omit_canary_hosts, envoy.retry_host_predicates.omit_host_metadata, envoy.retry_host_predicates.previous_hosts\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.matching.transport_socket.input: envoy.matching.inputs.endpoint_metadata, envoy.matching.inputs.locality_metadata, envoy.matching.inputs.transport_socket_filter_state\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.common.key_value: envoy.key_value.file_based\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.dubbo_proxy.filters: envoy.filters.dubbo.router\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.dubbo_proxy.serializers: dubbo.hessian2\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.content_parsers: envoy.content_parsers.json\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.matching.http.custom_matchers: envoy.matching.custom_matchers.domain_matcher, envoy.matching.custom_matchers.ip_range_matcher\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.router.cluster_specifier_plugin: envoy.router.cluster_specifier_plugin.lua, envoy.router.cluster_specifier_plugin.matcher\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.http.early_header_mutation: envoy.http.early_header_mutation.header_mutation\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.quic.proof_source: envoy.quic.proof_source.filter_chain\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.matching.http.input: envoy.matching.inputs.cel_data_input, envoy.matching.inputs.destination_ip, envoy.matching.inputs.destination_port, envoy.matching.inputs.direct_source_ip, envoy.matching.inputs.dns_san, envoy.matching.inputs.dynamic_metadata, envoy.matching.inputs.dynamic_module_data_input, envoy.matching.inputs.filter_state, envoy.matching.inputs.local_reply, envoy.matching.inputs.network_namespace, envoy.matching.inputs.request_headers, envoy.matching.inputs.request_trailers, envoy.matching.inputs.response_headers, envoy.matching.inputs.response_trailers, envoy.matching.inputs.server_name, envoy.matching.inputs.source_ip, envoy.matching.inputs.source_port, envoy.matching.inputs.source_type, envoy.matching.inputs.status_code_class_input, envoy.matching.inputs.status_code_input, envoy.matching.inputs.subject, envoy.matching.inputs.uri_san, query_params\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.rbac.matchers: envoy.rbac.matchers.upstream_ip_port\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.connection_handler: envoy.connection_handler.default\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   quic.http_server_connection: quic.http_server_connection.default\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.access_loggers: envoy.access_loggers.dynamic_modules, envoy.access_loggers.file, envoy.access_loggers.fluentd, envoy.access_loggers.http_grpc, envoy.access_loggers.open_telemetry, envoy.access_loggers.stats, envoy.access_loggers.stderr, envoy.access_loggers.stdout, envoy.access_loggers.tcp_grpc, envoy.access_loggers.wasm, envoy.file_access_log, envoy.fluentd_access_log, envoy.http_grpc_access_log, envoy.open_telemetry_access_log, envoy.stderr_access_log, envoy.stdout_access_log, envoy.tcp_grpc_access_log, envoy.wasm_access_log\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.resolvers: envoy.ip, envoy.resolvers.reverse_connection\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.access_loggers.extension_filters: envoy.access_loggers.extension_filters.cel, envoy.access_loggers.extension_filters.process_ratelimit\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.matching.stat_matching_data.input: stat_full_name_match_input\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.http.cache: envoy.extensions.http.cache.file_system_http_cache, envoy.extensions.http.cache.simple\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.tls.upstream_certificate_selectors: envoy.tls.certificate_selectors.on_demand_secret\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.ssl.server_context_factory: envoy.ssl.server_context_factory.default\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.matching.generic_proxy_request_input.input: envoy.matching.generic_proxy.input.host, envoy.matching.generic_proxy.input.method, envoy.matching.generic_proxy.input.path, envoy.matching.generic_proxy.input.property, envoy.matching.generic_proxy.input.request, envoy.matching.generic_proxy.input.service\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.route.early_data_policy: envoy.route.early_data_policy.default\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.path.rewrite: envoy.path.rewrite.uri_template.uri_template_rewriter\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.filters.udp.session: envoy.filters.udp.session.dynamic_forward_proxy, envoy.filters.udp.session.ext_authz, envoy.filters.udp.session.http_capsule\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.rate_limit_descriptors: envoy.rate_limit_descriptors.expr\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.health_check.event_sinks: envoy.health_check.event_sink.file\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.tracers.opentelemetry.samplers: envoy.tracers.opentelemetry.samplers.always_on, envoy.tracers.opentelemetry.samplers.cel, envoy.tracers.opentelemetry.samplers.dynatrace, envoy.tracers.opentelemetry.samplers.parent_based, envoy.tracers.opentelemetry.samplers.trace_id_ratio_based\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.matching.common_inputs: envoy.matching.common_inputs.environment_variable\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.quic.connection_id_generator: envoy.quic.connection_id_generator.quic_lb, envoy.quic.deterministic_connection_id_generator\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.request_id: envoy.request_id.uuid\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.http.cache_v2: envoy.extensions.http.cache_v2.file_system_http_cache, envoy.extensions.http.cache_v2.simple\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.http.ext_proc.processing_request_modifiers: envoy.extensions.http.ext_proc.mapped_attribute_builder\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.quic.client_packet_writer: envoy.quic.packet_writer.default\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.formatter: envoy.formatter.cel, envoy.formatter.dynamic_modules, envoy.formatter.file_content, envoy.formatter.generic_secret, envoy.formatter.metadata, envoy.formatter.req_without_query\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.matching.input_matchers: envoy.matching.input_matchers.generic_request_matcher, envoy.matching.matchers.cel_matcher, envoy.matching.matchers.consistent_hashing, envoy.matching.matchers.dynamic_modules, envoy.matching.matchers.ip, envoy.matching.matchers.metadata_matcher, envoy.matching.matchers.runtime_fraction\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.tracers.opentelemetry.resource_detectors: envoy.tracers.opentelemetry.resource_detectors.dynatrace, envoy.tracers.opentelemetry.resource_detectors.environment, envoy.tracers.opentelemetry.resource_detectors.static_config\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.tls.cert_validator: envoy.tls.cert_validator.default, envoy.tls.cert_validator.dynamic_modules, envoy.tls.cert_validator.spiffe\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.http.ext_proc.response_processors: envoy.extensions.http.ext_proc.save_processing_response\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.internal_redirect_predicates: envoy.internal_redirect_predicates.allow_listed_routes, envoy.internal_redirect_predicates.previous_routes, envoy.internal_redirect_predicates.safe_cross_scheme\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.rbac.principals: envoy.rbac.principals.mtls_authenticated\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.matching.stat_tag_matching_data.input: stat_tag_value_input\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.load_balancing_policies: envoy.load_balancing_policies.client_side_weighted_round_robin, envoy.load_balancing_policies.cluster_provided, envoy.load_balancing_policies.dynamic_modules, envoy.load_balancing_policies.least_request, envoy.load_balancing_policies.load_aware_locality, envoy.load_balancing_policies.maglev, envoy.load_balancing_policies.override_host, envoy.load_balancing_policies.random, envoy.load_balancing_policies.ring_hash, envoy.load_balancing_policies.round_robin, envoy.load_balancing_policies.subset, envoy.load_balancing_policies.wrr_locality\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.quic.connection_debug_visitor: envoy.quic.connection_debug_visitor.basic, envoy.quic.connection_debug_visitor.quic_stats\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   filter_state.object: envoy.filters.listener.original_dst.local_ip, envoy.filters.listener.original_dst.remote_ip, envoy.hashable_string, envoy.network.application_protocols, envoy.network.ip, envoy.network.network_namespace, envoy.network.transport_socket.http_11_proxy.info, envoy.network.transport_socket.original_dst_address, envoy.network.upstream_server_name, envoy.network.upstream_subject_alt_names, envoy.ratelimit.hits_addend, envoy.router.debug_config, envoy.string, envoy.tcp_proxy.cluster, envoy.tcp_proxy.disable_tunneling, envoy.tcp_proxy.per_connection_idle_timeout_ms, envoy.upstream.dynamic_host, envoy.upstream.dynamic_port\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.compression.compressor: envoy.compression.brotli.compressor, envoy.compression.gzip.compressor, envoy.compression.zstd.compressor\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.clusters: envoy.cluster.dns, envoy.cluster.eds, envoy.cluster.logical_dns, envoy.cluster.original_dst, envoy.cluster.static, envoy.cluster.strict_dns, envoy.clusters.aggregate, envoy.clusters.composite, envoy.clusters.dynamic_forward_proxy, envoy.clusters.dynamic_modules, envoy.clusters.mcp_multicluster, envoy.clusters.redis, envoy.clusters.reverse_connection\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.grpc_credentials: envoy.grpc_credentials.default, envoy.grpc_credentials.file_based_metadata\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.http.custom_response: envoy.extensions.http.custom_response.local_response_policy, envoy.extensions.http.custom_response.redirect_policy\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.config_subscription: envoy.config_subscription.ads, envoy.config_subscription.ads_collection, envoy.config_subscription.aggregated_grpc_collection, envoy.config_subscription.delta_grpc, envoy.config_subscription.delta_grpc_collection, envoy.config_subscription.filesystem, envoy.config_subscription.filesystem_collection, envoy.config_subscription.grpc, envoy.config_subscription.rest\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.tls.certificate_selectors: envoy.tls.certificate_selectors.on_demand_secret\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   network.connection.client: default, envoy_internal\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.http.header_validators: envoy.http.header_validators.envoy_default\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.quic.server.crypto_stream: envoy.quic.crypto_stream.server.quiche\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.tracers: envoy.tracers.datadog, envoy.tracers.dynamic_modules, envoy.tracers.fluentd, envoy.tracers.opentelemetry, envoy.tracers.skywalking, envoy.tracers.xray, envoy.tracers.zipkin, envoy.zipkin\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.resource_monitors: envoy.resource_monitors.cgroup_memory, envoy.resource_monitors.cpu_utilization, envoy.resource_monitors.fixed_heap, envoy.resource_monitors.injected_resource\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.udp_packet_writer: envoy.udp_packet_writer.default, envoy.udp_packet_writer.gso\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.filters.http.upstream: envoy.buffer, envoy.ext_proc, envoy.extensions.filters.http.dynamic_modules, envoy.filters.http.admission_control, envoy.filters.http.aws_lambda, envoy.filters.http.aws_request_signing, envoy.filters.http.buffer, envoy.filters.http.composite, envoy.filters.http.credential_injector, envoy.filters.http.ext_proc, envoy.filters.http.header_mutation, envoy.filters.http.lua, envoy.filters.http.match_delegate, envoy.filters.http.upstream_codec, envoy.filters.http.upstream_rbac, envoy.filters.http.wasm\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.http.forward_client_cert_details: forward_client_cert\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.upstream_options: envoy.extensions.upstreams.http.reverse_tunnel.v3.ReverseTunnelUpstreamCodecOptions, envoy.extensions.upstreams.http.v3.HttpProtocolOptions, envoy.extensions.upstreams.tcp.v3.TcpProtocolOptions, envoy.upstreams.http.http_protocol_options, envoy.upstreams.tcp.tcp_protocol_options\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.route_config_update_requester: envoy.route_config_update_requester.default\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.config_mux: envoy.config_mux.delta_grpc_mux_factory, envoy.config_mux.grpc_mux_factory, envoy.config_mux.new_grpc_mux_factory, envoy.config_mux.sotw_grpc_mux_factory\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.matching.network.input: envoy.matching.inputs.application_protocol, envoy.matching.inputs.destination_ip, envoy.matching.inputs.destination_port, envoy.matching.inputs.direct_source_ip, envoy.matching.inputs.dns_san, envoy.matching.inputs.filter_state, envoy.matching.inputs.network_namespace, envoy.matching.inputs.server_name, envoy.matching.inputs.source_ip, envoy.matching.inputs.source_port, envoy.matching.inputs.source_type, envoy.matching.inputs.subject, envoy.matching.inputs.transport_protocol, envoy.matching.inputs.uri_san\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.config.validators: envoy.config.validators.minimum_clusters, envoy.config.validators.minimum_clusters_validator\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.thrift_proxy.transports: auto, framed, header, unframed\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.transport_sockets.downstream: envoy.transport_sockets.alts, envoy.transport_sockets.dynamic_modules, envoy.transport_sockets.quic, envoy.transport_sockets.raw_buffer, envoy.transport_sockets.starttls, envoy.transport_sockets.tap, envoy.transport_sockets.tcp_stats, envoy.transport_sockets.tls, raw_buffer, starttls, tls\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.string_matcher: envoy.string_matcher.lua\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.listener_manager_impl: envoy.listener_manager_impl.default, envoy.listener_manager_impl.validation\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.upstreams: envoy.filters.connection_pools.tcp.generic\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.rds_factory: envoy.rds_factory.default\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.path.match: envoy.path.match.uri_template.uri_template_matcher\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.matching.network.custom_matchers: envoy.matching.custom_matchers.domain_matcher, envoy.matching.custom_matchers.ip_range_matcher\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.transport_sockets.upstream: envoy.transport_sockets.alts, envoy.transport_sockets.dynamic_modules, envoy.transport_sockets.http_11_proxy, envoy.transport_sockets.internal_upstream, envoy.transport_sockets.quic, envoy.transport_sockets.raw_buffer, envoy.transport_sockets.starttls, envoy.transport_sockets.tap, envoy.transport_sockets.tcp_stats, envoy.transport_sockets.tls, envoy.transport_sockets.upstream_proxy_protocol, raw_buffer, starttls, tls\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.wasm.runtime: envoy.wasm.runtime.null, envoy.wasm.runtime.v8\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.built_in_formatters: envoy.built_in_formatters.cel, envoy.built_in_formatters.http.default, envoy.built_in_formatters.metadata, envoy.built_in_formatters.stream_info.default, envoy.built_in_formatters.xfcc_value\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.filters.http: envoy.bandwidth_limit, envoy.buffer, envoy.cors, envoy.csrf, envoy.ext_authz, envoy.ext_proc, envoy.extensions.filters.http.dynamic_modules, envoy.fault, envoy.filters.http.a2a, envoy.filters.http.adaptive_concurrency, envoy.filters.http.admission_control, envoy.filters.http.ai_protocol_manager, envoy.filters.http.alternate_protocols_cache, envoy.filters.http.api_key_auth, envoy.filters.http.aws_lambda, envoy.filters.http.aws_request_signing, envoy.filters.http.bandwidth_limit, envoy.filters.http.bandwidth_share, envoy.filters.http.basic_auth, envoy.filters.http.buffer, envoy.filters.http.cache, envoy.filters.http.cache_v2, envoy.filters.http.cdn_loop, envoy.filters.http.composite, envoy.filters.http.compressor, envoy.filters.http.connect_grpc_bridge, envoy.filters.http.cors, envoy.filters.http.credential_injector, envoy.filters.http.csrf, envoy.filters.http.custom_response, envoy.filters.http.decompressor, envoy.filters.http.dynamic_forward_proxy, envoy.filters.http.ext_authz, envoy.filters.http.ext_proc, envoy.filters.http.fault, envoy.filters.http.file_server, envoy.filters.http.file_system_buffer, envoy.filters.http.filter_chain, envoy.filters.http.gcp_authn, envoy.filters.http.geoip, envoy.filters.http.grpc_field_extraction, envoy.filters.http.grpc_http1_bridge, envoy.filters.http.grpc_http1_reverse_bridge, envoy.filters.http.grpc_json_reverse_transcoder, envoy.filters.http.grpc_json_transcoder, envoy.filters.http.grpc_stats, envoy.filters.http.grpc_web, envoy.filters.http.header_mutation, envoy.filters.http.header_to_metadata, envoy.filters.http.health_check, envoy.filters.http.ip_tagging, envoy.filters.http.json_to_metadata, envoy.filters.http.jwt_authn, envoy.filters.http.local_ratelimit, envoy.filters.http.lua, envoy.filters.http.match_delegate, envoy.filters.http.mcp, envoy.filters.http.mcp_json_rest_bridge, envoy.filters.http.mcp_router, envoy.filters.http.oauth2, envoy.filters.http.on_demand, envoy.filters.http.original_src, envoy.filters.http.proto_api_scrubber, envoy.filters.http.proto_message_extraction, envoy.filters.http.rate_limit_quota, envoy.filters.http.ratelimit, envoy.filters.http.rbac, envoy.filters.http.router, envoy.filters.http.set_filter_state, envoy.filters.http.set_metadata, envoy.filters.http.sse_to_metadata, envoy.filters.http.stateful_session, envoy.filters.http.tap, envoy.filters.http.thrift_to_metadata, envoy.filters.http.transform, envoy.filters.http.wasm, envoy.geoip, envoy.grpc_http1_bridge, envoy.grpc_json_transcoder, envoy.grpc_web, envoy.health_check, envoy.ip_tagging, envoy.local_rate_limit, envoy.lua, envoy.rate_limit, envoy.router\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.network.dns_resolver: envoy.network.dns_resolver.cares, envoy.network.dns_resolver.getaddrinfo, envoy.network.dns_resolver.hickory\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.filters.udp_listener: envoy.filters.udp.dns_filter, envoy.filters.udp_listener.dynamic_modules, envoy.filters.udp_listener.udp_proxy\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.filters.network: envoy.echo, envoy.ext_authz, envoy.filters.network.connection_limit, envoy.filters.network.direct_response, envoy.filters.network.dubbo_proxy, envoy.filters.network.dynamic_modules, envoy.filters.network.echo, envoy.filters.network.ext_authz, envoy.filters.network.ext_proc, envoy.filters.network.generic_proxy, envoy.filters.network.geoip, envoy.filters.network.http_connection_manager, envoy.filters.network.local_ratelimit, envoy.filters.network.mongo_proxy, envoy.filters.network.ratelimit, envoy.filters.network.rbac, envoy.filters.network.redis_proxy, envoy.filters.network.reverse_tunnel, envoy.filters.network.reverse_tunnel_drain_aware_http_connection_manager, envoy.filters.network.set_filter_state, envoy.filters.network.sni_cluster, envoy.filters.network.sni_dynamic_forward_proxy, envoy.filters.network.tcp_bandwidth_limit, envoy.filters.network.tcp_proxy, envoy.filters.network.thrift_proxy, envoy.filters.network.wasm, envoy.filters.network.zookeeper_proxy, envoy.http_connection_manager, envoy.mongo_proxy, envoy.ratelimit, envoy.redis_proxy, envoy.tcp_proxy\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.regex_engines: envoy.regex_engines.google_re2\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.srds_factory: envoy.srds_factory.default\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.filters.upstream_network: envoy.filters.upstream_network.reverse_tunnel_lifecycle\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.matching.action: envoy.matching.action.transport_socket.name, envoy.matching.actions.format_string, filter-chain-name\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.quic.server_preferred_address: quic.server_preferred_address.datasource, quic.server_preferred_address.fixed\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.generic_proxy.codecs: envoy.generic_proxy.codecs.dubbo, envoy.generic_proxy.codecs.http1\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.geoip_providers: envoy.geoip_providers.maxmind\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.guarddog_actions: envoy.watchdog.abort_action, envoy.watchdog.profile_action\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.tls.upstream_certificate_mappers: envoy.tls.certificate_mappers.static_name, envoy.tls.upstream_certificate_mappers.filter_state_override\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.health_checkers: envoy.health_checkers.dynamic_modules, envoy.health_checkers.grpc, envoy.health_checkers.http, envoy.health_checkers.redis, envoy.health_checkers.tcp, envoy.health_checkers.thrift\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.stats_sinks: envoy.dog_statsd, envoy.graphite_statsd, envoy.metrics_service, envoy.open_telemetry_stat_sink, envoy.stat_sinks.dog_statsd, envoy.stat_sinks.dynamic_modules, envoy.stat_sinks.graphite_statsd, envoy.stat_sinks.hystrix, envoy.stat_sinks.metrics_service, envoy.stat_sinks.open_telemetry, envoy.stat_sinks.statsd, envoy.stat_sinks.wasm, envoy.statsd\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.http.injected_credentials: envoy.http.injected_credentials.generic, envoy.http.injected_credentials.oauth2\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.tls.certificate_mappers: envoy.tls.certificate_mappers.sni, envoy.tls.certificate_mappers.static_name\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.thrift_proxy.protocols: auto, binary, binary/non-strict, compact, twitter\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.retry_priorities: envoy.retry_priorities.previous_priorities\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.http.original_ip_detection: envoy.http.original_ip_detection.custom_header, envoy.http.original_ip_detection.xff\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.upstream.local_address_selector: envoy.upstream.local_address_selector.default_local_address_selector, envoy.upstream.local_address_selector.filter_state_override\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.bootstrap: envoy.bootstrap.dynamic_modules, envoy.bootstrap.internal_listener, envoy.bootstrap.reverse_tunnel.downstream_socket_interface, envoy.bootstrap.reverse_tunnel.upstream_socket_interface, envoy.bootstrap.wasm, envoy.extensions.network.socket_interface.default_socket_interface, envoy.extensions.network.socket_interface.sockmap\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.thrift_proxy.filters: envoy.filters.thrift.header_to_metadata, envoy.filters.thrift.payload_to_metadata, envoy.filters.thrift.rate_limit, envoy.filters.thrift.router\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.filters.listener: envoy.filters.listener.dynamic_modules, envoy.filters.listener.http_inspector, envoy.filters.listener.local_ratelimit, envoy.filters.listener.original_dst, envoy.filters.listener.original_src, envoy.filters.listener.proxy_protocol, envoy.filters.listener.set_filter_state, envoy.filters.listener.tls_inspector, envoy.listener.http_inspector, envoy.listener.original_dst, envoy.listener.original_src, envoy.listener.proxy_protocol, envoy.listener.tls_inspector\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.generic_proxy.filters: envoy.filters.generic.router\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.http.stateful_header_formatters: envoy.http.stateful_header_formatters.preserve_case, preserve_case\n[2026-10-09 11:22:27.276][15][info][main] [source/server/server.cc:471]   envoy.dubbo_proxy.protocols: dubbo\n[2026-10-09 11:22:27.282][15][warning][misc] [source/common/protobuf/message_validator_impl.cc:23] Deprecated field: type envoy.config.cluster.v3.Cluster Using deprecated option 'envoy.config.cluster.v3.Cluster.dns_failure_refresh_rate' from file cluster.proto. This configuration will be removed from Envoy soon. Please see https://www.envoyproxy.io/docs/envoy/latest/version_history/version_history for details. If continued use of this field is absolutely necessary, see https://www.envoyproxy.io/docs/envoy/latest/configuration/operations/runtime#using-runtime-overrides-for-deprecated-features for how to apply a temporary and highly discouraged override.\n[2026-10-09 11:22:27.282][15][info][main] [source/server/server.cc:531] HTTP header map info:\n[2026-10-09 11:22:27.283][15][info][main] [source/server/server.cc:534]   request header map: 664 bytes: :authority,:method,:path,:protocol,:scheme,accept,accept-encoding,access-control-request-headers,access-control-request-method,access-control-request-private-network,authentication,authorization,cache-control,cdn-loop,connection,content-encoding,content-length,content-type,expect,grpc-accept-encoding,grpc-timeout,if-match,if-modified-since,if-none-match,if-range,if-unmodified-since,keep-alive,origin,pragma,proxy-connection,proxy-status,referer,te,transfer-encoding,upgrade,user-agent,via,x-client-trace-id,x-envoy-attempt-count,x-envoy-decorator-operation,x-envoy-downstream-service-cluster,x-envoy-downstream-service-node,x-envoy-expected-rq-timeout-ms,x-envoy-external-address,x-envoy-force-trace,x-envoy-hedge-on-per-try-timeout,x-envoy-internal,x-envoy-ip-tags,x-envoy-is-timeout-retry,x-envoy-max-retries,x-envoy-original-host,x-envoy-original-path,x-envoy-original-url,x-envoy-retriable-header-names,x-envoy-retriable-status-codes,x-envoy-retry-grpc-on,x-envoy-retry-on,x-envoy-upstream-alt-stat-name,x-envoy-upstream-rq-per-try-timeout-ms,x-envoy-upstream-rq-timeout-alt-response,x-envoy-upstream-rq-timeout-ms,x-envoy-upstream-stream-duration-ms,x-forwarded-client-cert,x-forwarded-for,x-forwarded-host,x-forwarded-port,x-forwarded-proto,x-request-id\n[2026-10-09 11:22:27.283][15][info][main] [source/server/server.cc:534]   request trailer map: 120 bytes: \n[2026-10-09 11:22:27.283][15][info][main] [source/server/server.cc:534]   response header map: 432 bytes: :status,access-control-allow-credentials,access-control-allow-headers,access-control-allow-methods,access-control-allow-origin,access-control-allow-private-network,access-control-expose-headers,access-control-max-age,age,cache-control,connection,content-encoding,content-length,content-type,date,etag,expires,grpc-message,grpc-status,keep-alive,last-modified,location,proxy-connection,proxy-status,server,transfer-encoding,upgrade,vary,via,x-envoy-attempt-count,x-envoy-decorator-operation,x-envoy-degraded,x-envoy-immediate-health-check-fail,x-envoy-ratelimited,x-envoy-upstream-canary,x-envoy-upstream-healthchecked-cluster,x-envoy-upstream-service-time,x-request-id\n[2026-10-09 11:22:27.283][15][info][main] [source/server/server.cc:534]   response trailer map: 144 bytes: grpc-message,grpc-status\n[2026-10-09 11:22:27.291][15][info][main] [source/server/server.cc:968] runtime: layers:\n  - name: static_layer_0\n    static_layer:\n      envoy:\n        resource_limits:\n          listener:\n            example_listener_name:\n              connection_limit: 10000\n[2026-10-09 11:22:27.317][15][info][main] [source/server/server.cc:796] Starting admin HTTP server at 0.0.0.0:10000\n[2026-10-09 11:22:27.317][15][info][admin] [source/server/admin/admin.cc:66] admin address: 0.0.0.0:10000\n[2026-10-09 11:22:27.318][15][info][config] [source/server/configuration_impl.cc:181] loading tracing configuration\n[2026-10-09 11:22:27.318][15][info][config] [source/server/configuration_impl.cc:132] loading 0 static secret(s)\n[2026-10-09 11:22:27.318][15][info][config] [source/server/configuration_impl.cc:138] loading 13 cluster(s)\n[2026-10-09 11:22:27.323][15][info][config] [source/server/configuration_impl.cc:148] loading 1 listener(s)\n[2026-10-09 11:22:27.324][15][info][tracing] [source/common/tracing/tracer_manager_impl.cc:42] instantiating a new tracer: envoy.tracers.opentelemetry\n[2026-10-09 11:22:27.325][15][info][config] [source/server/configuration_impl.cc:164] loading stats configuration\n[2026-10-09 11:22:27.326][15][warning][main] [source/server/server.cc:1038] There is no configured limit to the number of allowed active downstream connections. Configure a limit in `envoy.resource_monitors.global_downstream_max_connections` resource monitor.\n[2026-10-09 11:22:27.326][15][info][main] [source/server/server.cc:1077] starting main dispatch loop\n[2026-10-09 11:22:27.339][15][info][runtime] [source/common/runtime/runtime_impl.cc:567] RTDS has finished initialization\n[2026-10-09 11:22:27.339][15][info][upstream] [source/common/upstream/cluster_manager_impl.cc:250] cm init: all clusters initialized\n[2026-10-09 11:22:27.339][15][info][main] [source/server/server.cc:1057] all clusters initialized. initializing init manager\n[2026-10-09 11:22:27.339][15][info][config] [source/common/listener_manager/listener_manager_impl.cc:1067] all dependencies initialized. starting workers\n[2026-10-09 11:37:27.341][15][info][main] [source/server/drain_manager_impl.cc:226] shutting down parent after drain\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "No evidence that frontend-proxy (Envoy) is emitting ECONNREFUSED; Envoy initialized all clusters and started admin server \u2014 no upstream connect errors found in recent logs.",
+                "reasoning": "Pod frontend-proxy-55b6b6c7d9-gbhp8 is Running. Envoy logs (last 1000 lines) show 'loading 13 cluster(s)' and 'all clusters initialized' and 'Starting admin HTTP server at 0.0.0.0:10000' with no occurrences of ECONNREFUSED or upstream connect errors; no backend IP:port reported as unreachable."
+              },
+              "id": "call_k0MzfRoMctdGIz1vCaPrRk8o",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    },
+    {
+      "diagnosis": "Hypothesis NOT confirmed: frontend Service is correctly defined and has endpoints; no evidence frontend-proxy is pointing at ClusterIP 10.96.249.217.",
+      "reasoning": "get_services_used_by(frontend-proxy) shows it targets service name 'frontend'. kubectl describe service/frontend -n astronomy-shop shows ClusterIP 10.96.115.5, port 'tcp-service' 8080/TCP with Endpoint 10.244.1.16:8080. Therefore the frontend Service exposes 8080 and has endpoints; if frontend-proxy were using 10.96.249.217 that would be incorrect (ClusterIP is 10.96.115.5), but there is no direct evidence from the allowed tools that the proxy uses the wrong ClusterIP.",
+      "task": {
+        "priority": 2,
+        "status": "completed",
+        "investigation_goal": "Connection check: verify frontend-proxy -> frontend configuration and frontend service definition (two-sided). Hypothesis: frontend-proxy is configured to call ClusterIP 10.96.249.217:8080 (or a wrong port/name) while the frontend Service exposes a different port/name or has no endpoints.",
+        "target_resource": "frontend <-> frontend-proxy (connection)",
+        "resource_type": "service",
+        "suggested_tools": [
+          "get_services_used_by(frontend-proxy)",
+          "kubectl_describe service/frontend -n astronomy-shop"
+        ]
+      },
+      "insights": [
+        "frontend-proxy targets three services: chatbot, image-provider, and frontend.",
+        "Service 'frontend' in namespace 'astronomy-shop' is a ClusterIP service (10.96.115.5) exposing port tcp-service 8080/TCP (targetPort 8080) with at least one endpoint (10.244.1.16:8080).",
+        "The frontend Service is correctly defined and has endpoints; there is no Service-level misconfiguration or missing endpoints observed in the described output.",
+        "The hypothesis that frontend-proxy was routing to an incorrect ClusterIP (10.96.249.217) is NOT confirmed \u2014 the observed ClusterIP is 10.96.115.5 and no evidence was found that frontend-proxy points to 10.96.249.217.",
+        "No events or errors were present on the Service description to indicate an immediate Service failure."
+      ],
+      "steps_performed": [
+        "Checked services used by 'frontend-proxy' using get_services_used_by",
+        "Checked Service 'frontend' in namespace 'astronomy-shop' using kubectl_describe",
+        "Analyzed relationship between 'frontend-proxy' and Service 'frontend'",
+        "Correlated data from get_services_used_by and kubectl_describe",
+        "Submitted final diagnosis using submit_final_diagnosis"
+      ],
+      "tools_stats": {
+        "get_services_used_by": 1,
+        "kubectl_describe": 1,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 1: frontend-proxy is configured to route to a service named \"frontend\" (possibly using ClusterIP 10.96.249.217:8080 or an incorrect port/name). I'll fetch the services that frontend-proxy uses to confirm the target service name and target port. I'll call get_services_used_by(frontend-proxy).",
+          "tool_calls": [
+            {
+              "name": "get_services_used_by",
+              "args": {
+                "service": "frontend-proxy"
+              },
+              "id": "call_TMIG2JYAEXuTYj0KDAZ8YYqF",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n  \"service\": \"frontend-proxy\",\n  \"services_used\": [\n    \"chatbot\",\n    \"image-provider\",\n    \"frontend\"\n  ],\n  \"count\": 3,\n  \"summary\": \"Service 'frontend-proxy' uses 3 other services to complete its tasks\"\n}"
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 2: The 'frontend' Service in namespace 'astronomy-shop' is configured with ClusterIP 10.96.249.217 and port 8080 (or a different port), and it may have no endpoints. I'll describe service/frontend -n astronomy-shop to confirm ClusterIP, port names/targets, and endpoints.",
+          "tool_calls": [
+            {
+              "name": "kubectl_describe",
+              "args": {
+                "resourceType": "service",
+                "name": "frontend",
+                "namespace": "astronomy-shop"
+              },
+              "id": "call_iDiYHqK9jlymppTHwr1mhtZp",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Name:                     frontend\nNamespace:                astronomy-shop\nLabels:                   app.kubernetes.io/component=frontend\n                          app.kubernetes.io/managed-by=Helm\n                          app.kubernetes.io/name=frontend\n                          app.kubernetes.io/part-of=opentelemetry-demo\n                          app.kubernetes.io/version=3.1.0\n                          helm.sh/chart=opentelemetry-demo-0.42.1\n                          opentelemetry.io/name=frontend\nAnnotations:              meta.helm.sh/release-name: astronomy-shop\n                          meta.helm.sh/release-namespace: astronomy-shop\nSelector:                 opentelemetry.io/name=frontend\nType:                     ClusterIP\nIP Family Policy:         SingleStack\nIP Families:              IPv4\nIP:                       10.96.115.5\nIPs:                      10.96.115.5\nPort:                     tcp-service  8080/TCP\nTargetPort:               8080/TCP\nEndpoints:                10.244.1.16:8080\nSession Affinity:         None\nInternal Traffic Policy:  Cluster\nEvents:                   <none>\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "Hypothesis NOT confirmed: frontend Service is correctly defined and has endpoints; no evidence frontend-proxy is pointing at ClusterIP 10.96.249.217.",
+                "reasoning": "get_services_used_by(frontend-proxy) shows it targets service name 'frontend'. kubectl describe service/frontend -n astronomy-shop shows ClusterIP 10.96.115.5, port 'tcp-service' 8080/TCP with Endpoint 10.244.1.16:8080. Therefore the frontend Service exposes 8080 and has endpoints; if frontend-proxy were using 10.96.249.217 that would be incorrect (ClusterIP is 10.96.115.5), but there is no direct evidence from the allowed tools that the proxy uses the wrong ClusterIP."
+              },
+              "id": "call_0dSRSe8yQn7yDGcZrnlLCXYL",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    }
+  ],
+  "tasks_to_be_executed": [],
+  "final_report": {
+    "root_cause": "Clients attempted TCP connects to an obsolete/unassigned ClusterIP (10.96.249.217:8080), resulting in ECONNREFUSED. The frontend Service currently has ClusterIP 10.96.115.5 and healthy endpoints (10.244.1.16:8080). Envoy (frontend-proxy) logs show normal startup and no upstream connect errors, so the refused connections were not emitted by the observed Envoy instance. Most likely failure mechanism: a caller (e.g., frontend-web or another component) used a stale/hard-coded ClusterIP or a cached DNS resolution and therefore connected to an IP with no listener.",
+    "affected_resources": [
+      "TraceIDs: 18b62b1f48b0cd66e419511d910bff86, e6dc77193bef6c1b916d735474604242 (showing ECONNREFUSED -> 10.96.249.217:8080)",
+      "Service: frontend (ClusterIP currently 10.96.115.5)",
+      "Service IP (stale): 10.96.249.217 (observed in traces as target of failed connects)",
+      "Pod: frontend-proxy-55b6b6c7d9-gbhp8 (Envoy) \u2014 proxy involved in traced call sequence",
+      "Pod endpoint: 10.244.1.16:8080 (frontend backend pod reported as endpoint)",
+      "Component: frontend-web (observed as caller in trace sequences)"
+    ],
+    "evidence_summary": "1) Traces (2) contain explicit error messages: 'fetch failed; connect ECONNREFUSED 10.96.249.217:8080' in call sequences involving frontend-web -> frontend-proxy -> frontend. 2) Envoy logs from frontend-proxy-55b6b6c7d9-gbhp8 (last ~1000 lines) show successful cluster initialization ('loading 13 cluster(s)', 'all clusters initialized') and no upstream connect errors or ECONNREFUSED entries. 3) Service inspection (kubectl describe service/frontend -n astronomy-shop) shows the frontend Service currently has ClusterIP 10.96.115.5 and a healthy endpoint 10.244.1.16:8080. 4) The mismatch between the ClusterIP observed in Kubernetes (.115.5) and the IP in the traces (.249.217) explains the connection refused: .249.217 is not the active ClusterIP and therefore had no listener.",
+    "investigation_summary": "What was done: (priority #1) inspected frontend-proxy pod status and tail logs \u2014 Envoy completed startup and emitted no upstream errors; (priority #2) inspected frontend service mapping \u2014 Service is ClusterIP 10.96.115.5 with endpoint 10.244.1.16:8080 and frontend-proxy is configured to target the 'frontend' service by name. Key correlations: trace-sourced ECONNREFUSED addresses (10.96.249.217) do not match the current ClusterIP for the frontend Service, and the Envoy proxy pod logs lack any upstream connection failures. Diagnosis: the refused connections were caused by clients connecting to an obsolete IP rather than a misconfigured or failing Envoy or missing backend pod. Remaining uncertainty: which component performed the connection to 10.96.249.217 (frontend-web or another caller), and whether the 10.96.249.217 address was recently assigned to the frontend Service (i.e., service recreation / ClusterIP change) or introduced via hard-coded configuration or DNS caching.",
+    "detection": true,
+    "localization": null
+  },
+  "prompts_config": {
+    "triage_agent": "You are an expert Site Reliability Engineer. Your mission is to triage a Kubernetes application by analyzing provided data.\n\nGuidelines:\n1. Identify issues only at the pod or service level; do not generalize across the cluster.\n2. For each affected pod or service, create one concise symptom entry, summarizing all evidence (pods, metrics, traces).\n3. For each symptom, specify the affected resource (pod/service name only, no prefixes or namespaces) and cite exact evidence.\n4. If only traces indicate errors, still create a symptom, naming the service/pod and summarizing the likely cause from the trace message. Avoid generic statements\u2014make the hypothesis clear.\n5. If no issues are detected, return an empty list.\n\nBe conservative: only report clear symptoms supported by evidence. Output should be concise and avoid speculation.",
+    "planner_agent": "You are an expert Site Reliability Engineer. Produce a concise, de-duplicated investigation plan: each task must inspect only a precise part of the infrastructure, surfacing the highest-probability root-cause signals and converging quickly on the true RCA.\n\n**Toolkit** (use only necessary commands)\n- `kubectl_get`: List Kubernetes resources/status\n- `kubectl_describe`: Inspect detailed spec/events\n- `get_pods_from_service`: Map services to pods\n- `get_cluster_pods_and_services`: Snapshot cluster topology\n- `get_logs`: Retrieve recent logs\n- `get_traces`: Fetch traces filtered by latency/errors\n- `get_trace`: Inspect a single trace end-to-end\n- `get_metrics`: Current CPU/memory/network metrics\n- `get_metrics_range`: Compare historical metric trends\n- `get_services_used_by`: Downstream service calls\n- `get_dependencies`: External/infrastructure dependencies\n\n**Planning Rules**\n1. For each symptom, classify the dominant failure domain (app, latency, dependency/config, platform) and form a single, testable hypothesis per resource.\n2. Ground every hypothesis with `data_dependencies` and `infra_dependencies` JSON. Merge overlapping symptoms into a single resource-focused task.\n3. **Connections (mandatory):** Always create at least one task to inspect the connection between each pair of affected resources or the epicenter and its immediate dependents. Each connection check must be two-sided (e.g., verify `service-a` config for `service-b`'s URL and confirm `service-b`'s Kubernetes service definition for port/name).\n\n**Tool Selection**\n- Use the minimum toolset (ideally one or two commands) to prove/disprove each hypothesis. Broader lists are rejected.\n\n**Priority Policy**\n- Assign unique priorities (1..N).\n- Priority 1: direct epicenter checks. Next: connection tasks described above (top-tier; prioritize misconfiguration checks). Subsequent priorities: rank high-impact hypotheses (shared dependencies, severe crashes) above narrow/low-scope checks.\n\nReturn outputs as succinct, actionable investigation tasks. Avoid unnecessary elaboration.",
+    "rca_agent": "You are a DevOps expert conducting precise root cause analysis on a Kubernetes service.\n\nInstructions:\n1. Use only the specified Priority Tools. Do not use or suggest tools outside this list.\n2. For each tool call, state a clear, testable hypothesis directly related to the investigation goal. Avoid broad or exploratory queries.\n3. Each tool call must yield unique, non-overlapping information. Do not repeat or slightly vary requests.\n4. Stop investigating when you have:\n   - Direct evidence of a root cause (or have ruled one out conclusively), or\n   - Multiple converging data points, or\n   - Enough information to meet the investigation goal.\n5. Do not:\n   - Repeat or re-run tool calls unless addressing a truly new hypothesis,\n   - Exceed the scope of Target or Priority Tools,\n   - Investigate unrelated resources.\n6. Once sufficient, non-redundant evidence is gathered (typically 2\u20133 targeted tool calls), call submit_final_diagnosis with:\n   - diagnosis: Concise statement of the root cause\n   - reasoning: Briefly reference the unique findings\n\nFocus on unique, conclusive findings; be concise and avoid unnecessary output.",
+    "supervisor_agent": "You are a Site Reliability Engineer conducting a Root Cause Analysis (RCA) of an incident.\n\nAnalyze all symptoms and investigation findings to:\n1. Identify key patterns or correlations\n2. Determine the main root cause\n3. List all directly affected resources\n4. Summarize the essential supporting evidence\n\n**Task Priority Usage:**\n- Tasks have a priority: 1 = highest (most likely to reveal root cause), higher numbers = less important\n- Always give more weight to findings from higher-priority tasks\n\n**Detection & Localization:**\n- detection: `true` if any anomaly is detected; `false` only if none\n- localization: List only the specific faulty service(s) or pod(s) confirmed as the root cause. Leave empty if undetermined.\n\n**Root Cause Summary:**\n- Clearly connect symptoms, evidence, and the failure mechanism\n- Cite exact configuration or runtime details when relevant\n- If diagnosis is incomplete, specify proof still needed\n\n**Iteration Policy:**\n- Request further RCA steps only if evidence is insufficient for a confident conclusion\n- Never repeat completed or ongoing tasks\n- If more work is needed, list only essential pending tasks with justification; otherwise, leave tasks list empty and conclude.\n\nKeep your RCA output concise, precise, and focus only on critical information necessary to communicate the root cause."
+  },
+  "experiment_name": "D - ReAct conservative P2 B7 - Astronomy Shop - Recommendation service cache failure (261005astronomy-all-agents)",
+  "agent_id": "D",
+  "agent_configuration_name": "D - ReAct conservative P2 B7",
+  "stats": {
+    "run_id": "01a12078-2a36-7bf1-9c92-4479097d8671",
+    "experiment_name": "D - ReAct conservative P2 B7 - Astronomy Shop - Recommendation service cache failure (261005astronomy-all-agents)",
+    "status": "success",
+    "execution_time_seconds": 115.033903,
+    "total_tokens": 61717,
+    "total_cost": 0.031136,
+    "langsmith_url": "https://smith.langchain.com/o/c6e347a7-d8e4-4610-b18c-5a37e9448bb6/projects/p/9d66e647-0a32-4360-8198-97ce7fda45ac/r/01a12078-2a36-7bf1-9c92-4479097d8671?trace_id=01a12078-2a36-7bf1-9c92-4479097d8671&start_time=2026-10-09T11:41:48.470366",
+    "agent_stats": {
+      "supervisor_agent": {
+        "total_tokens": 6685,
+        "input_tokens": 3064,
+        "output_tokens": 3621,
+        "cost": 0.007242,
+        "runs_count": 1,
+        "execution_time_seconds": 20.539117,
+        "models": [
+          "gpt-5-mini"
+        ]
+      },
+      "rca_agent": {
+        "total_tokens": 49002,
+        "input_tokens": 41134,
+        "output_tokens": 7868,
+        "cost": 0.015736,
+        "runs_count": 2,
+        "execution_time_seconds": 117.047298,
+        "models": [
+          "gpt-5-mini"
+        ]
+      },
+      "schedule_rca_tasks": {
+        "total_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost": 0.0,
+        "runs_count": 1,
+        "execution_time_seconds": 0.002424,
+        "models": []
+      },
+      "planner_agent": {
+        "total_tokens": 4449,
+        "input_tokens": 1170,
+        "output_tokens": 3279,
+        "cost": 0.006558,
+        "runs_count": 1,
+        "execution_time_seconds": 20.203599,
+        "models": [
+          "gpt-5-mini"
+        ]
+      },
+      "triage_agent": {
+        "total_tokens": 1581,
+        "input_tokens": 781,
+        "output_tokens": 800,
+        "cost": 0.0016,
+        "runs_count": 1,
+        "execution_time_seconds": 7.743753,
+        "models": [
+          "gpt-5-mini"
+        ]
+      }
+    }
+  },
+  "testbed": {
+    "application_name": [
+      "Astronomy Shop"
+    ],
+    "fault_name": "Recommendation service cache failure",
+    "target_namespace": "astronomy-shop",
+    "trace_service_starting_point": "frontend-proxy",
+    "rca_tasks_per_iteration": "2",
+    "max_tool_calls": "7"
+  },
+  "jaeger_start_us": "1791545091579870",
+  "evaluation": {
+    "detection": true,
+    "localization": false,
+    "localization_any": false,
+    "localization_legacy": false,
+    "blamed_harness": false,
+    "rca_score": 1,
+    "rca_motivation": "The incident is about an unbounded in-memory cache growth in the recommendation service causing memory leak and latency. The agent instead describes TCP connection refusals to an obsolete ClusterIP and stale IP/DNS usage, which is a completely different component and failure mode, with no relation to cache growth or memory usage."
+  }
+}
