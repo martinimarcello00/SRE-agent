@@ -12,6 +12,29 @@
 
 ---
 
+## Upstreams: Docker Hub, ghcr.io, quay.io
+
+A registry in proxy mode mirrors only **one** upstream, so there is one container per upstream:
+
+| Container | Host port | Upstream |
+|---|---|---|
+| `kind-registry` | 5001 | Docker Hub (`docker.io`) |
+| `kind-registry-ghcr` | 5002 | `ghcr.io` |
+| `kind-registry-quay` | 5003 | `quay.io` |
+
+Astronomy Shop (OTel demo chart 0.42.1) pulls 25 of its ~35 images from `ghcr.io` and 2 from `quay.io`, so the Docker Hub mirror alone does not speed it up. The mirror table lives in `REGISTRY_MIRRORS` in `automate_cluster_creation.py`.
+
+Note: `/v2/_catalog` may be empty or incomplete on proxy registries even when caching works. Check the cache with
+`docker exec kind-registry-ghcr du -sh /var/lib/registry` or `docker logs kind-registry-ghcr`.
+
+Cache lifetime and storage:
+- The cache lives in the container's **anonymous volume**. It survives `docker stop`/`start`, but `docker rm` orphans it. `setup-registry.sh` therefore only creates missing containers and `docker start`s stopped ones.
+- `registry:2.8.3` has no `proxy.ttl` option: expiry is fixed at 168h and, without `storage.delete.enabled`, is expected to remove nothing from disk (inferred from the code, to be confirmed in the logs after the first expiry). Do **not** add `ttl:` (ignored) or `storage.delete.enabled: true` (known bugs with blobs shared across repositories).
+- A stopped mirror does not break pulls (containerd falls back to the upstream) but loses the cache benefit, so `setup_cluster_and_aiopslab` refuses to start unless all three mirrors are running and answer `/v2/`. Fix with `docker start kind-registry kind-registry-ghcr kind-registry-quay`.
+- The Astronomy Shop chart is pinned to `0.42.1` in AIOpsLab's `astronomy-shop.json`; a different chart version changes image tags and makes the cache cold.
+
+---
+
 ## Step 1: Start the Registry Container
 
 We use a helper script to start the registry with the correct configuration (proxy mode enabled).
@@ -25,8 +48,8 @@ chmod +x registry/setup-registry.sh
 ```
 
 This script:
-1.  Starts the `kind-registry` container on port `5001`.
-2.  Mounts `registry/registry-config.yml` to enable the Docker Hub mirror.
+1.  Starts the three registry containers (ports `5001`-`5003`).
+2.  Mounts the matching `registry-config*.yml` into each to enable its upstream mirror.
 3.  Connects the registry to the `kind` network (if it exists).
 
 **Important:** Do not just run `docker run registry:2`. You **must** use the script or mount the config file, otherwise the registry won't cache anything from Docker Hub.
@@ -122,9 +145,9 @@ docker logs -f kind-registry
 ```
 
 This:
-- Creates a `kind-registry` Docker container
-- Sets it up to auto-cache images from Docker Hub
-- Stores cached images in `./registry-data/`
+- Creates the three registry containers (`kind-registry`, `-ghcr`, `-quay`), or starts them if stopped
+- Sets each up to auto-cache images from its upstream
+- Stores cached images in the container's anonymous volume (`/var/lib/registry`)
 - Configured to restart automatically
 
 ### 2. Use Images Normally
@@ -150,7 +173,7 @@ containers:
 ### Check Cached Images
 
 ```bash
-curl -s http://localhost:5000/v2/_catalog | python3 -m json.tool
+curl -s http://localhost:5001/v2/_catalog | python3 -m json.tool   # 5002 ghcr, 5003 quay
 ```
 
 ### View Registry Logs
@@ -169,9 +192,8 @@ docker start kind-registry
 ### Clear Cache
 
 ```bash
-docker rm -f kind-registry
-rm -rf registry-data/
-./setup-registry.sh          # Creates fresh registry
+docker rm -f -v kind-registry   # -v also deletes the anonymous volume holding the cache
+./setup-registry.sh             # Creates fresh registry
 ```
 
 ## Integration with Experiments

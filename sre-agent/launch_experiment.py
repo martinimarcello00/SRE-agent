@@ -27,6 +27,7 @@ logging.getLogger("mcp.client.streamable_http").setLevel(logging.WARNING)
 
 # Import the compiled parent graph
 from graph import parent_graph
+from agents import react_baseline_graph
 
 async def run_sre_agent(
     app_name: str,
@@ -37,7 +38,8 @@ async def run_sre_agent(
     trace_name: Optional[str] = None,
     agent_configuration_name: Optional[str] = None,
     agent_id: Optional[str] = None,
-    prompts_config: Optional[dict[str, str]] = None
+    prompts_config: Optional[dict[str, str]] = None,
+    architecture: Optional[str] = None
 ) -> tuple[dict, float]:
     """Execute the complete SRE agent workflow.
     
@@ -47,12 +49,11 @@ async def run_sre_agent(
         target_namespace: Kubernetes namespace to investigate
         trace_service_starting_point: Service name to start trace analysis
         trace_name: Optional name for the execution trace
-        
+        architecture: "react_baseline" runs the single ReAct agent (ablation); default is the multi-agent parent graph
+
     Returns:
         Tuple of (result dictionary, execution time in seconds)
     """
-    
-    from graph import SreParentState
 
     if not prompts_config:
         prompts_config = {}
@@ -74,6 +75,11 @@ async def run_sre_agent(
         prompts_config=prompts_config
     )
 
+    graph = parent_graph
+    if architecture == "react_baseline":
+        graph = react_baseline_graph
+        initial_state["messages"] = []  # type: ignore
+
     if not agent_configuration_name:
         agent_configuration_name = "Default"
 
@@ -92,6 +98,7 @@ async def run_sre_agent(
             "fault_name" : fault_name,
             "agent_configuration": agent_configuration_name,
             "agent_id" : agent_id,
+            "architecture": architecture or "multi_agent",
             "parallel_rca_tasks": os.environ.get("RCA_TASKS_PER_ITERATION","Unknown"),
             "max_tool_calls": os.environ.get("MAX_TOOL_CALLS","Unknown")
         }
@@ -99,9 +106,12 @@ async def run_sre_agent(
     if trace_name:
         config["run_name"] = trace_name  # type: ignore
 
-    result = await parent_graph.ainvoke(initial_state, config) #type: ignore
+    result = await graph.ainvoke(initial_state, config) #type: ignore
     
     execution_time = time.time() - start_time
+
+    if graph is react_baseline_graph:
+        result.pop("messages", None)  # already exported as rca_analyses_list[0]["message_history"]
     
     return result, execution_time
 
@@ -134,28 +144,43 @@ def get_experiment_metrics(experiment_name: str, exec_time: float | int) -> dict
     
     # Get all child runs
     child_runs = list(langsmith_client.list_runs(parent_run_id=run.id))
-    
+
+    # Map every LLM run and its ancestors to the models used
+    models_by_run = {}
+    for llm_run in langsmith_client.list_runs(trace_id=run.trace_id, run_type="llm"):
+        model = llm_run.metadata.get("ls_model_name")
+        for run_id in [llm_run.id, *(llm_run.parent_run_ids or [])] if model else []:
+            models_by_run.setdefault(run_id, set()).add(model)
+
     # Aggregate token usage by agent name
     agent_stats = {}
-    
+
     for agent_run in child_runs:
         agent_name = agent_run.name
-        
+
         if agent_name not in agent_stats:
             agent_stats[agent_name] = {
                 "total_tokens": 0,
                 "input_tokens": 0,
                 "output_tokens": 0,
                 "cost": 0.0,
-                "runs_count": 0
+                "runs_count": 0,
+                "execution_time_seconds": 0.0,
+                "models": set()
             }
-        
+
         agent_stats[agent_name]["total_tokens"] += agent_run.total_tokens or 0
         agent_stats[agent_name]["input_tokens"] += (agent_run.input_tokens or 0)
         agent_stats[agent_name]["output_tokens"] += (agent_run.output_tokens or 0)
         agent_stats[agent_name]["cost"] += float((agent_run.completion_cost or 0.0))
         agent_stats[agent_name]["runs_count"] += 1
-    
+        if agent_run.end_time:
+            agent_stats[agent_name]["execution_time_seconds"] += (agent_run.end_time - agent_run.start_time).total_seconds()
+        agent_stats[agent_name]["models"] |= models_by_run.get(agent_run.id, set())
+
+    for stats in agent_stats.values():
+        stats["models"] = sorted(stats["models"])
+
     run_url = getattr(run, "url", None)
 
     # Build final metrics dictionary

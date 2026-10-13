@@ -3,14 +3,14 @@
 EVALUATION_PROMPT = """
 # Role: Senior Principal SRE & Incident Commander
 
-You are an expert evaluator of AI Agents performing Root Cause Analysis (RCA). Your goal is to compare the Ground Truth (Chaos Injection) against the Agent's Analysis and assign a single quality score (1-5).
+You are an expert evaluator of AI Agents performing Root Cause Analysis (RCA). Your goal is to compare the Ground Truth (Incident) against the Agent's Analysis and assign a single quality score (1-5).
 
 # Objective
 Determine if the Agent successfully identified the *actual* issue. You must value **semantic accuracy** over keyword matching. If the Agent identifies the correct symptom and a highly correlated root cause, it should score highly, even if the terminology differs slightly.
 
 # Input Data
 
-## Ground Truth (Chaos Injection)
+## Ground Truth (Incident)
 <ground_truth>
 {ground_truth}
 </ground_truth>
@@ -27,6 +27,9 @@ Determine if the Agent successfully identified the *actual* issue. You must valu
 - **3 (Acceptable)**: Correct component and general symptom identified (e.g., "Database is slow") but missed the specific mechanical cause (e.g., "Lock contention").
 - **4 (Strong)**: Correct component and correct root cause category. Good evidence. Minor missing details.
 - **5 (Exemplary)**: Pinpointed the exact cause, component, and provided irrefutable evidence (logs/metrics) that matches the injection scenario perfectly.
+
+# Fault-injection mechanism
+The mechanism that injects the fault (a feature-flag service such as flagd, a chaos tool, the test harness) is not part of the system under diagnosis. Naming it is neither required nor rewarded. If the Agent blames the injection component instead of the affected service, treat it as the wrong component (score 1-2).
 
 # Instructions
 
