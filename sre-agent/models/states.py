@@ -1,5 +1,5 @@
 """TypedDict state definitions for LangGraph agents."""
-from typing import TypedDict, List, Annotated, Dict
+from typing import TypedDict, List, Annotated, Dict, NotRequired
 from langgraph.graph.message import add_messages, AnyMessage
 from .schemas import Symptom, RCATask
 from .reducers import merge_rca_analyses
@@ -21,6 +21,7 @@ class TriageAgentState(TypedDict):
 
 class PlannerAgentState(TypedDict):
     """State for the Planner Agent"""
+    architecture: NotRequired[str]
     app_name: str
     app_summary: str
     target_namespace: str
@@ -56,6 +57,7 @@ class SupervisorAgentState(TypedDict):
 
 class SreParentState(TypedDict):
     """Parent state for the complete SRE workflow"""
+    architecture: NotRequired[str]
     app_name: str
     app_summary: str
     target_namespace: str
