@@ -27,6 +27,7 @@ logging.getLogger("mcp.client.streamable_http").setLevel(logging.WARNING)
 
 # Import the compiled parent graph
 from graph import parent_graph
+from agents import react_baseline_graph
 
 async def run_sre_agent(
     app_name: str,
@@ -37,7 +38,8 @@ async def run_sre_agent(
     trace_name: Optional[str] = None,
     agent_configuration_name: Optional[str] = None,
     agent_id: Optional[str] = None,
-    prompts_config: Optional[dict[str, str]] = None
+    prompts_config: Optional[dict[str, str]] = None,
+    architecture: Optional[str] = None
 ) -> tuple[dict, float]:
     """Execute the complete SRE agent workflow.
     
@@ -47,12 +49,11 @@ async def run_sre_agent(
         target_namespace: Kubernetes namespace to investigate
         trace_service_starting_point: Service name to start trace analysis
         trace_name: Optional name for the execution trace
-        
+        architecture: "react_baseline" runs the single ReAct agent (ablation); default is the multi-agent parent graph
+
     Returns:
         Tuple of (result dictionary, execution time in seconds)
     """
-    
-    from graph import SreParentState
 
     if not prompts_config:
         prompts_config = {}
@@ -74,6 +75,11 @@ async def run_sre_agent(
         prompts_config=prompts_config
     )
 
+    graph = parent_graph
+    if architecture == "react_baseline":
+        graph = react_baseline_graph
+        initial_state["messages"] = []  # type: ignore
+
     if not agent_configuration_name:
         agent_configuration_name = "Default"
 
@@ -92,6 +98,7 @@ async def run_sre_agent(
             "fault_name" : fault_name,
             "agent_configuration": agent_configuration_name,
             "agent_id" : agent_id,
+            "architecture": architecture or "multi_agent",
             "parallel_rca_tasks": os.environ.get("RCA_TASKS_PER_ITERATION","Unknown"),
             "max_tool_calls": os.environ.get("MAX_TOOL_CALLS","Unknown")
         }
@@ -99,9 +106,12 @@ async def run_sre_agent(
     if trace_name:
         config["run_name"] = trace_name  # type: ignore
 
-    result = await parent_graph.ainvoke(initial_state, config) #type: ignore
+    result = await graph.ainvoke(initial_state, config) #type: ignore
     
     execution_time = time.time() - start_time
+
+    if graph is react_baseline_graph:
+        result.pop("messages", None)  # already exported as rca_analyses_list[0]["message_history"]
     
     return result, execution_time
 

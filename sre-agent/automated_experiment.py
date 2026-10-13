@@ -102,6 +102,7 @@ async def run_experiment(
     batch_name: str,
     results_group_dir: Optional[Path] = None,
     prompts_config: Optional[dict[str,str]] = None,
+    architecture: Optional[str] = None,
     run_index: int = 0,
     total_runs: int = 1
 ) -> tuple[dict, Path]:
@@ -131,7 +132,8 @@ async def run_experiment(
         trace_name=experiment_name,
         agent_configuration_name=agent_configuration_name,
         agent_id=agent_id,
-        prompts_config=prompts_config
+        prompts_config=prompts_config,
+        architecture=architecture
     )
 
     logger.info("Waiting 15 seconds to allow LangSmith to import final experiment data before saving results...")
@@ -446,6 +448,7 @@ def main():
                             evaluation_func=evaluate_experiment,
                             results_group_dir=agent_results_dir,
                             prompts_config=prompts_config,
+                            architecture=agent_conf.get("architecture"),
                             run_index=run_num,
                             total_runs=num_runs
                         )
