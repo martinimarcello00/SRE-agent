@@ -24,9 +24,9 @@ class FakeJudge:
 
 
 ev.GPT5_1 = FakeJudge()
-scenario = {"RCA_gt": "gt"}
+scenario = {"RCA_gt": "gt", "target": "cart"}
 
-# Empty analyses never reach the judge or the usage API
+# With a fault, empty analyses never reach the judge or the usage API
 ev.get_today_model_usage = lambda **kw: (_ for _ in ()).throw(AssertionError("usage API called"))
 assert ev.evaluate_rca_analysis(scenario, "No analysis data available")[0] == 1
 assert ev.evaluate_rca_analysis(scenario, "  ")[0] == 1 and FakeJudge.calls == 0
@@ -34,7 +34,11 @@ assert ev.evaluate_rca_analysis(scenario, "  ")[0] == 1 and FakeJudge.calls == 0
 # Under the daily limit the judge runs, over it the score is None
 ev.get_today_model_usage = lambda **kw: {"total_tokens": 100}
 assert ev.evaluate_rca_analysis(scenario, "cart cannot reach valkey")[0] == 4 and FakeJudge.calls == 1
+
+# No fault: "no analysis" is the correct answer, so it is not auto-scored 1
+assert ev.evaluate_rca_analysis({"RCA_gt": "gt", "target": None}, "No analysis data available")[0] == 4 and FakeJudge.calls == 2
+
 ev.get_today_model_usage = lambda **kw: {"total_tokens": ev.GPT5_1_TOKEN_DAILY_LIMIT + 1}
 score, msg = ev.evaluate_rca_analysis(scenario, "cart cannot reach valkey")
-assert score is None and "exceeded" in msg and FakeJudge.calls == 1
+assert score is None and "exceeded" in msg and FakeJudge.calls == 2
 print("ok")

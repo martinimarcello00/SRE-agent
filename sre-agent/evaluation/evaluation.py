@@ -110,7 +110,8 @@ def evaluate_rca_analysis(fault_scenario: dict, rca_analysis: str, langsmith_met
     Returns:
         tuple[Optional[int], str]: A tuple containing the evaluation score (or None on error) and an explanation string.
     """
-    if not rca_analysis.strip() or rca_analysis.strip() == NO_ANALYSIS:
+    # Only a missed fault: in No fault, "no analysis" is the correct answer (the notebook leaves No fault out of RCA means)
+    if fault_scenario.get("target") and (not rca_analysis.strip() or rca_analysis.strip() == NO_ANALYSIS):
         return 1, "No analysis was produced; judge not called."
 
     token_usage = get_today_model_usage(model_name=GPT5_1_NAME)
