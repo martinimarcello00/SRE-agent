@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 
 from utils import TelegramNotification, get_today_model_usage
 from config import apply_config_overrides, MAX_DAILY_OPENAI_TOKEN_LIMIT, AIOPSLAB_DIR, TRACE_SERVICE_STARTING_POINT, MCP_CONFIG, get_mcp_config, use_fallback_openai_key
+from api.config_manager import ConfigManager  # MCP-server is on sys.path via config
 from evaluation import evaluate_experiment
 
 # Configure logging for the SRE Agent script
@@ -280,8 +281,12 @@ def main():
         # MCP_CONFIG is built once at import; MCP tools open a new stdio session per call
         # reading this dict by reference, so refresh its env to pick up the scenario overrides.
         MCP_CONFIG["cluster_api"]["env"].update(get_mcp_config()["cluster_api"]["env"])
-        # Note: the triage agent reads JAEGER_URL once per process (ConfigManager singleton),
-        # so run one application per batch.
+        # JAEGER_START_US is Astronomy-only and set after the gate: clear what the previous scenario left.
+        os.environ.pop("JAEGER_START_US", None)
+        MCP_CONFIG["cluster_api"]["env"].pop("JAEGER_START_US", None)
+        # The in-process clients (triage, readiness gate) read JAEGER_URL & co. from the ConfigManager singleton,
+        # loaded once per process: reload it, or every app after the first queries the first app's Jaeger.
+        ConfigManager().refresh_config()
 
         if enable_notifications and telegram_notifier:
             try:
@@ -328,16 +333,19 @@ def main():
                 fault_duration=scenario.get("fault_duration"),
             )
 
-            # Optional per-scenario port-forward (e.g. Jaeger in astronomy-shop has no NodePort)
-            if success and scenario.get("port_forward_command"):
-                logger.info("Starting port-forward: %s", scenario["port_forward_command"])
-                port_forward = subprocess.Popen(scenario["port_forward_command"], shell=True, start_new_session=True)
+            # Jaeger has no NodePort: the scenario brings its own port-forward (astronomy-shop), else forward svc/jaeger (social, hotel; same as AIOpsLab trace_api.py)
+            if success:
+                pf_command = scenario.get("port_forward_command") or f"kubectl port-forward svc/jaeger 16686:16686 -n {target_namespace}"
+                logger.info("Starting port-forward: %s", pf_command)
+                port_forward = subprocess.Popen(pf_command, shell=True, start_new_session=True)
                 time.sleep(5)
 
             # Readiness gate: namespace, pods, flag, Jaeger, traces, Prometheus (SKIP_READINESS_GATE=1 bypasses it)
             gate_failures = run_readiness_gate(scenario) if success else {}
             success = success and not gate_failures
-            if success:  # Jaeger ignores lookback: from now on the agent queries only traces newer than this instant
+            # Jaeger ignores lookback: from now on the agent queries only traces newer than this instant.
+            # Astronomy only: Social/Hotel have just the setup wrk job, which this filter would cut.
+            if success and scenario.get("scenario") == "Astronomy Shop":
                 os.environ["JAEGER_START_US"] = MCP_CONFIG["cluster_api"]["env"]["JAEGER_START_US"] = str(time.time_ns() // 1000)
 
             if not success:
