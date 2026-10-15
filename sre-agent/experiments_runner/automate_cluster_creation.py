@@ -38,6 +38,12 @@ def check_registry_mirrors() -> bool:
     return ok
 
 
+def kind_nodes() -> list[str]:
+    """IDs of the docker containers backing the nodes of the "kind" cluster (empty when it is gone)."""
+    out = subprocess.run(["docker", "ps", "-aq", "--filter", "label=io.x-k8s.kind.cluster=kind"], capture_output=True, text=True)
+    return out.stdout.split()
+
+
 def run_command_with_wait(command, timeout=600, encoding='utf-8', stream_output=False, wait_for_string=None):
     """
     Run a command and wait for it to complete or for a specific string to appear.
@@ -264,7 +270,11 @@ def setup_cluster_and_aiopslab(
     if not kind_config_path.exists():
         logger.error("Kind config file not found at %s", kind_config_path)
         return False
-    
+
+    # A node left by a failed delete (or an interrupted batch) makes `kind create` fail
+    if kind_nodes() and not cleanup_cluster():
+        return False
+
     cluster_command = f"kind create cluster --config {kind_config_path}"
     exit_code, _ = run_command_with_wait(
         cluster_command,
@@ -359,36 +369,31 @@ def setup_cluster_and_aiopslab(
         return False
 
 
-def cleanup_cluster(cluster_timeout=120, stream_output=False):
+def cleanup_cluster(cluster_timeout=120, stream_output=False, attempts=5, retry_wait=10):
     """
-    Delete the kind cluster and wait for confirmation of node deletion.
-    
+    Delete the kind cluster and check that its nodes are really gone.
+
+    Docker can fail to kill a loaded node ("could not kill container: tried to kill container, but did not
+    receive an exit event") and leave it running: the next `kind create cluster` then fails and the scenario
+    is lost. The node's container is the ground truth, not the command's output.
+
     Args:
-        cluster_timeout: Timeout for cluster deletion in seconds
+        cluster_timeout: Timeout for each deletion in seconds
         stream_output: If True, stream the deletion command output to stdout
-        
+        attempts: How many times to run the deletion before giving up
+        retry_wait: Seconds to wait before retrying
+
     Returns:
-        bool: True if successful, False otherwise
+        bool: True if no node of the cluster is left, False otherwise
     """
-    logger.info("Deleting kind cluster")
-    
-    delete_command = "kind delete cluster"
-    # Wait for the "Deleted nodes:" string to confirm nodes were deleted
-    delete_exit_code, output = run_command_with_wait(
-        delete_command,
-        timeout=cluster_timeout,
-        stream_output=stream_output,
-        wait_for_string=r"Deleted nodes:\s*\[.*\]",
-    )
-    
-    if delete_exit_code != 0:
-        logger.warning(
-            "Failed to delete kind cluster (exit code: %s)",
-            delete_exit_code,
-        )
-        return False
-    else:
-        logger.info("Kind cluster deleted successfully")
-        if output:
-            logger.debug("Cluster deletion output:\n%s", output)
-        return True
+    for attempt in range(1, attempts + 1):
+        logger.info("Deleting kind cluster (attempt %d/%d)", attempt, attempts)
+        exit_code, output = run_command_with_wait("kind delete cluster", timeout=cluster_timeout, stream_output=stream_output)
+        if not kind_nodes():
+            logger.info("Kind cluster deleted successfully")
+            return True
+        logger.warning("Kind nodes still present after delete (exit code: %s, output: %s); retrying in %d s",
+                       exit_code, (output or "").strip()[-200:], retry_wait)
+        time.sleep(retry_wait)
+    logger.error("Kind cluster nodes still present after %d delete attempts", attempts)
+    return False
