@@ -47,3 +47,16 @@ Both renames also come with a new ground truth: the injected fault is a buggy ge
 2. For every record with `reevaluate=True`, call `evaluation.evaluation.evaluate_experiment(fault_scenario, report)`, where `fault_scenario` is the current scenario JSON in `sre-agent/experiments_runner/fault-scenarios/` matched on app name and `testbed.fault_name`, and `report` is the result JSON itself. Write the result back to the `evaluation` key of the file in this folder.
 3. Before overwriting, keep the previous result under a separate key such as `evaluation_v1` so the old and new scores can be compared.
 4. Re-run `notebooks/analysis/result-analysis.ipynb` on this folder to regenerate the summaries and plots.
+
+## Status: completed on 2026-10-16
+
+- All 248 records were re-scored with the evaluator at `4ef081d`, using the current fault scenarios (`accepted_targets` included). 215 gpt-5.1 judge calls, none failed. The previous evaluation is in `evaluation_v1`; `evaluation_meta` records the date, evaluator version and scenario file.
+- **No-fault fix.** At `4ef081d` the judge gave RCA 1 to No-fault runs where the agent correctly reported nothing, and the old scores ranged from 1 to 5 for the same answer. The evaluator now scores No fault without the judge: 5 when the agent reports nothing, 1 when it reports a fault that does not exist. All 36 No-fault records were re-scored this way (`evaluator_commit: 4ef081d+no-fault-deterministic-rca`). 35 got 5; Astronomy L got 1 because it blamed `shipping`.
+- The analysis notebook was re-run on the new scores. The summaries and plots in this folder are up to date.
+
+### Corrections after reviewing the changes (2026-10-16)
+
+- **Geo application misconfiguration ground truth.** The `c817583` text said AIOpsLab "does not establish a specific MongoDB port mismatch". The judge read this as "there is no port mismatch" and scored 2 the agents that found one. The container logs show it does exist: `Read database URL: mongodb-geo:27777`, while MongoDB listens on 27017. The `RCA_gt` now states this, and the 12 records were judged again: 9 get 4–5, while H, I and L get 2 because they blame missing configuration instead.
+- **Localization normalizer.** `image yinfangchen/geo:app3` used to be read as "image"; it is now read as `geo`. Only Geo D changes, from false to true.
+- **`secret/mongodb-tls` is not accepted** for the TLS fault: it is a Kubernetes Secret, not a service. Agents that list it next to `url-shorten-mongodb` stay false.
+- Records touched by these corrections have `evaluation_meta.evaluator_commit = 4ef081d+no-fault-deterministic-rca+image-normalizer+geo-gt`.
