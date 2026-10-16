@@ -102,13 +102,16 @@ def evaluate_localization(fault_scenario: dict, localization: str, any_of: bool 
     ok = {normalize_service(a).replace("-", "") for a in accepted}
     return bool(found & ok) if any_of else bool(found) and found <= ok
 
-def evaluate_rca_analysis(fault_scenario: dict, rca_analysis: str, langsmith_metadata: Optional[dict] = None) -> tuple[Optional[int], str]:
+def evaluate_rca_analysis(fault_scenario: dict, rca_analysis: str, langsmith_metadata: Optional[dict] = None,
+                          detection: Optional[bool] = None) -> tuple[Optional[int], str]:
     """
     Evaluates the root cause analysis (RCA) result using an LLM and returns a score and explanation.
 
     Args:
         fault_scenario (dict): The fault scenario dictionary, expected to contain an "RCA_gt" key.
         rca_analysis (str): The RCA analysis result to evaluate.
+        detection (Optional[bool]): The agent's detection verdict, used for No fault; when None,
+            a non-empty analysis counts as a reported fault.
 
     Returns:
         tuple[Optional[int], str]: A tuple containing the evaluation score (or None on error) and an explanation string.
@@ -116,10 +119,12 @@ def evaluate_rca_analysis(fault_scenario: dict, rca_analysis: str, langsmith_met
     no_analysis = not rca_analysis.strip() or rca_analysis.strip() == NO_ANALYSIS
     # No fault is scored without the judge: the rubric compares against an injected fault, so it scored
     # the correct empty answer 1 and gave the same answer anywhere from 1 to 5 across runs.
+    # The verdict comes from detection, because some agents explain "no problem detected" in the analysis.
     if not fault_scenario.get("target"):
-        if no_analysis:
+        reported = detection if detection is not None else not no_analysis
+        if not reported:
             return 5, "No fault was injected and the agent reported none; judge not called."
-        return 1, "No fault was injected but the agent reported a root cause; judge not called."
+        return 1, "No fault was injected but the agent reported a fault; judge not called."
     if no_analysis:
         return 1, "No analysis was produced; judge not called."
 
@@ -186,6 +191,6 @@ def evaluate_experiment(fault_scenario: dict, report: dict)-> dict:
     target = fault_scenario.get("target")
     evaluation["localization_legacy"] = target in localization_str if target else not localization_str  # old substring rule
     evaluation["blamed_harness"] = blamed_harness(localization_str)
-    evaluation["rca_score"], evaluation["rca_motivation"] = evaluate_rca_analysis(fault_scenario, rca_analtysis, llmJudge_metadata)
+    evaluation["rca_score"], evaluation["rca_motivation"] = evaluate_rca_analysis(fault_scenario, rca_analtysis, llmJudge_metadata, detection)
 
     return evaluation

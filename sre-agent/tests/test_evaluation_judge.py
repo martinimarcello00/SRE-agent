@@ -40,6 +40,9 @@ no_fault = {"RCA_gt": "gt", "target": None}
 assert ev.evaluate_rca_analysis(no_fault, "No analysis data available")[0] == 5
 assert ev.evaluate_rca_analysis(no_fault, "")[0] == 5
 assert ev.evaluate_rca_analysis(no_fault, "shipping has intermittent latency")[0] == 1 and FakeJudge.calls == 1
+# With detection, an explained "no problem detected" is a correct answer and a detected fault is not
+assert ev.evaluate_rca_analysis(no_fault, "No problem detected: all pods are healthy", detection=False)[0] == 5
+assert ev.evaluate_rca_analysis(no_fault, "No analysis data available", detection=True)[0] == 1 and FakeJudge.calls == 1
 
 ev.get_today_model_usage = lambda **kw: {"total_tokens": ev.GPT5_1_TOKEN_DAILY_LIMIT + 1}
 score, msg = ev.evaluate_rca_analysis(scenario, "cart cannot reach valkey")
