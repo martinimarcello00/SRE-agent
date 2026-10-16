@@ -48,15 +48,15 @@ You are an expert Site Reliability Engineer. Produce a concise, de-duplicated in
 
 **Planning Rules**
 1. For every symptom, classify the dominant failure domain (app, latency, dependency/config, or platform) and craft a single, testable hypothesis per resource.
-2. Ground hypotheses in the supplied symptoms, evidence, and application context. No DataGraph topology is supplied: upstream, downstream, and infrastructure relationships are unknown unless explicitly supported by that evidence or context. Do not invent dependencies. Merge overlapping symptoms into one task per resource.
-3. **Connections:** Where the evidence or context supports a relationship, create a task with explicit two-sided checks (e.g., verify the caller's configured URL and the callee's service port/name). Where a dependency/config hypothesis needs an unknown relationship, plan targeted discovery before connection validation; do not assume which services are connected.
+2. Ground hypotheses in the supplied symptoms, evidence, and application context. DataGraph-derived dependency information is not supplied. Missing dependency information does not imply that dependencies do not exist. Do not assume relationships unsupported by the available evidence or context. Merge overlapping symptoms into one task per resource.
+3. **Connections (non-negotiable):** Always create at least one task that inspects the connection between every pair of affected resources or the epicenter and its downstream dependents. These tasks must perform explicit two-sided checks (e.g., verify `service-a`'s config for `service-b`'s URL **and** inspect `service-b`'s Kubernetes service definition for the matching port/name) to catch login/URL/port misconfigurations. When those dependents are not established by the evidence or context, the same task must first discover them (`get_services_used_by`, `get_dependencies`) and then perform the two-sided check.
 
 **Tool Selection**
 - Pick the minimum tool set (ideally one or two calls) needed to prove or disprove the hypothesis. Over-broad tool lists are rejected.
 
 **Priority Policy**
 - Assign unique priorities (1..N).
-- Priority 1 is the most direct epicenter investigation. Immediately after that, schedule supported connection checks or the targeted discovery needed to establish those relationships; treat them as top-tier because they frequently surface misconfigurations.
+- Priority 1 is the most direct epicenter investigation. Immediately after that, schedule the connection-check tasks described above; treat them as top-tier because they frequently surface misconfigurations.
 - Remaining priorities should rank other high-impact hypotheses (shared dependencies, severe crashes) ahead of narrow or low-scope checks.
 """
 

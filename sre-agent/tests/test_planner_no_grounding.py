@@ -41,10 +41,18 @@ def plan(**extra):
 
 # grounded (default): the DataGraph dependencies reach the prompt, with the grounded system prompt
 grounded = plan()
-assert "mongodb-geo-MARKER" in grounded and "Connections (non-negotiable)" in grounded
+assert "mongodb-geo-MARKER" in grounded and "`infra_dependencies` JSON" in grounded
 
 # no grounding: no dependencies and no dependency headers, with the no-grounding system prompt
 ungrounded = plan(architecture="planner_no_grounding")
 assert "mongodb-geo-MARKER" not in ungrounded and "Dependencies**" not in ungrounded
-assert "No DataGraph topology is supplied" in ungrounded and "geo-abc" in ungrounded
+assert "`infra_dependencies` JSON" not in ungrounded and "geo-abc" in ungrounded
+assert "DataGraph-derived dependency information is not supplied" in ungrounded
+assert "the same task must first discover them" in ungrounded
+
+# the ablation changes one variable: N is A's prompt except rule 2, and rule 3 is A's text plus the discovery sentence
+a_lines, n_lines = planner.PLANNER_SYSTEM_PROMPT.splitlines(), planner.PLANNER_NO_GROUNDING_SYSTEM_PROMPT.splitlines()
+changed = [(a, n) for a, n in zip(a_lines, n_lines) if a != n]
+assert len(a_lines) == len(n_lines) and [a[:2] for a, _ in changed] == ["2.", "3."]
+assert changed[1][1].startswith(changed[1][0] + " ")
 print("ok")
