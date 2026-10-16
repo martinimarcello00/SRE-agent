@@ -1,0 +1,513 @@
+{
+  "app_name": "Social Network",
+  "app_summary": "A social network with unidirectional follow relationships, implemented with loosely-coupled microservices, communicating with each other via Thrift RPCs. Supported Operations: Create text post (optional media: image, video, shortened URL, user tag), Read post, Read entire user timeline, Receive recommendations on which users to follow, Search database for user or post, Register/Login using user credentials, Follow/Unfollow user",
+  "target_namespace": "test-social-network",
+  "trace_service_starting_point": "nginx-thrift",
+  "problematic_pods": {
+    "problematic_pods": [],
+    "info": "No problematic pods detected based on status analysis. All pods appear healthy."
+  },
+  "slow_traces": {
+    "service": "nginx-thrift",
+    "traces": [
+      {
+        "traceID": "022438f0163983b5",
+        "latency_ms": 1019.661,
+        "has_error": true,
+        "sequence": "nginx-thrift -> compose-post-service -> media-service -> unique-id-service -> text-service -> url-shorten-service -> user-mention-service -> url-shorten-service -> user-mention-service",
+        "error_message": "; "
+      }
+    ],
+    "traces_count": 1
+  },
+  "problematic_metrics": {
+    "problematic_metrics": [],
+    "info": "All monitored metrics look healthy; no anomalous values detected."
+  },
+  "problematic_traces": {
+    "service": "nginx-thrift",
+    "traces": [
+      {
+        "traceID": "022438f0163983b5",
+        "latency_ms": 1019.661,
+        "has_error": true,
+        "sequence": "nginx-thrift -> compose-post-service -> media-service -> unique-id-service -> text-service -> url-shorten-service -> user-mention-service -> url-shorten-service -> user-mention-service",
+        "error_message": "; "
+      }
+    ],
+    "traces_count": 1
+  },
+  "symptoms": [
+    {
+      "potential_symptom": "Ingress service shows a slow, errored request (high latency at entry point)",
+      "resource_type": "service",
+      "affected_resource": "nginx-thrift",
+      "evidence": "Trace 022438f0163983b5 shows latency 1019.661 ms, has_error=true, sequence: nginx-thrift -> compose-post-service -> media-service -> unique-id-service -> text-service -> url-shorten-service -> user-mention-service -> url-shorten-service -> user-mention-service; error_message='; '"
+    },
+    {
+      "potential_symptom": "Repeated/resurging calls to url-shorten-service (possible retry/loop) contributing to end-to-end latency",
+      "resource_type": "service",
+      "affected_resource": "url-shorten-service",
+      "evidence": "Trace 022438f0163983b5 (latency 1019.661 ms, has_error=true) shows url-shorten-service invoked twice in sequence: ... -> url-shorten-service -> user-mention-service -> url-shorten-service -> user-mention-service; error_message='; '"
+    },
+    {
+      "potential_symptom": "Back-and-forth calls involving user-mention-service (possible recursion or retry escalation causing errors/latency)",
+      "resource_type": "service",
+      "affected_resource": "user-mention-service",
+      "evidence": "Trace 022438f0163983b5 (latency 1019.661 ms, has_error=true) shows user-mention-service appearing twice and alternating with url-shorten-service: ... -> url-shorten-service -> user-mention-service -> url-shorten-service -> user-mention-service; error_message='; '"
+    }
+  ],
+  "rca_tasks": [
+    {
+      "priority": 1,
+      "status": "in_progress",
+      "investigation_goal": "Failure domain: latency (ingress). Hypothesis: nginx-thrift is accumulating ~1s latency because upstream RPCs to compose-post-service are slow or being retried (ingress-level timeouts/retries). Verify nginx-thrift pod(s) show upstream timeouts/retries or repeated outbound Thrift calls to compose-post-service. Ground truth: compose-post-service appears in trace and in data_dependencies.",
+      "target_resource": "nginx-thrift",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_pods_from_service(nginx-thrift, namespace=test-social-network)",
+        "get_logs(<nginx-thrift-pod>, namespace=test-social-network)"
+      ]
+    },
+    {
+      "priority": 2,
+      "status": "in_progress",
+      "investigation_goal": "Failure domain: dependency/config. Connection check (explicit two-sided): verify nginx-thrift's configured endpoint/URL/port for compose-post-service AND inspect compose-post-service Kubernetes Service for matching port/name. Hypothesis: mismatched port/name or wrong Thrift endpoint in nginx-thrift causes timeouts/retries to compose-post-service.",
+      "target_resource": "nginx-thrift <-> compose-post-service",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_services_used_by(nginx-thrift, namespace=test-social-network)",
+        "kubectl_describe(service/compose-post-service, namespace=test-social-network)"
+      ]
+    },
+    {
+      "priority": 3,
+      "status": "in_progress",
+      "investigation_goal": "Failure domain: dependency/config. Connection check (explicit two-sided) for user-mention -> url-shorten: verify user-mention-service's configured endpoint/URL/port for url-shorten-service AND inspect url-shorten-service Kubernetes Service for matching port/name. Hypothesis: user-mention is calling url-shorten with a wrong port/endpoint leading to RPC failures and triggering retries/back-and-forth calls.",
+      "target_resource": "user-mention-service -> url-shorten-service",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_services_used_by(user-mention-service, namespace=test-social-network)",
+        "kubectl_describe(service/url-shorten-service, namespace=test-social-network)"
+      ]
+    },
+    {
+      "priority": 4,
+      "status": "pending",
+      "investigation_goal": "Failure domain: dependency/config. Connection check (explicit two-sided) for url-shorten -> user-mention: verify url-shorten-service's configured endpoint/URL/port for user-mention-service AND inspect user-mention-service Kubernetes Service for matching port/name. Hypothesis: url-shorten calls user-mention (and vice versa); a misconfigured client or service port mismatch could cause the observed alternating calls and errors.",
+      "target_resource": "url-shorten-service -> user-mention-service",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_services_used_by(url-shorten-service, namespace=test-social-network)",
+        "kubectl_describe(service/user-mention-service, namespace=test-social-network)"
+      ]
+    },
+    {
+      "priority": 5,
+      "status": "pending",
+      "investigation_goal": "Failure domain: app/dependency. Hypothesis: url-shorten-service is causing repeated/resurging calls due to cache misses or internal retry loops (not honoring url-shorten-memcached), causing extra DB/cache traffic and high end-to-end latency. Grounded in infra_dependencies: url-shorten-memcached (Cache) and url-shorten-mongodb (DB). Verify url-shorten pod logs for repeated outbound calls and examine cache hit/miss trends during the trace window.",
+      "target_resource": "url-shorten-service",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_pods_from_service(url-shorten-service, namespace=test-social-network)",
+        "get_logs(<url-shorten-pod>, namespace=test-social-network)"
+      ]
+    },
+    {
+      "priority": 6,
+      "status": "pending",
+      "investigation_goal": "Failure domain: app. Hypothesis: user-mention-service contains logic that retries/calls url-shorten on error and does not correctly handle transient failures, producing the observed back-and-forth calls and contributing to the trace error. Verify user-mention pod logs for repeated outbound calls to url-shorten, exceptions, and check pod restart/retry counts.",
+      "target_resource": "user-mention-service",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_pods_from_service(user-mention-service, namespace=test-social-network)",
+        "get_logs(<user-mention-pod>, namespace=test-social-network)"
+      ]
+    },
+    {
+      "priority": 7,
+      "status": "pending",
+      "investigation_goal": "Failure domain: dependency (infra). Hypothesis: url-shorten-memcached or url-shorten-mongodb are underperforming or returning errors causing url-shorten-service to fall back and retry, amplifying latency. Verify memcached and mongodb pod health/metrics and look for cache errors or DB slow queries around the trace timestamp.",
+      "target_resource": "url-shorten-memcached / url-shorten-mongodb",
+      "resource_type": "service",
+      "suggested_tools": [
+        "kubectl_describe(pod/url-shorten-memcached-566bf679b4-ns9q9, namespace=test-social-network)",
+        "kubectl_describe(pod/url-shorten-mongodb-5466bc77c8-lwght, namespace=test-social-network)"
+      ]
+    }
+  ],
+  "rca_analyses_list": [
+    {
+      "diagnosis": "nginx-thrift ingress latency is caused by repeated failed outbound Thrift RPCs to compose-post-service: the nginx-thrift pod(s) are encountering connection refusals and TCP read timeouts when calling compose-post-service, causing Thrift transport exceptions and retry/timeout behavior at the ingress layer.",
+      "reasoning": "Evidence:\n1) get_pods_from_service: nginx-thrift in namespace test-social-network has a single running pod nginx-thrift-7fbb6d9b65-jh9ks (so all ingress traffic funnels through this instance).\n2) get_logs from nginx-thrift-7fbb6d9b65-jh9ks: repeated errors show \"ComposePost(): compost_post failure: connect() failed: Connection refused\" and intermittent \"lua tcp socket read timed out\" followed by \"/usr/local/openresty/lualib/thrift/Thrift.lua:37: TTransportException:0: Default (unknown)\" for POST /wrk2-api/post/compose. The frequency of these errors (many per second over the log window) indicates repeated failed outbound Thrift calls and timeouts to compose-post-service, which will directly add ~1s latency at ingress due to connection timeouts/retries.",
+      "task": {
+        "priority": 1,
+        "status": "completed",
+        "investigation_goal": "Failure domain: latency (ingress). Hypothesis: nginx-thrift is accumulating ~1s latency because upstream RPCs to compose-post-service are slow or being retried (ingress-level timeouts/retries). Verify nginx-thrift pod(s) show upstream timeouts/retries or repeated outbound Thrift calls to compose-post-service. Ground truth: compose-post-service appears in trace and in data_dependencies.",
+        "target_resource": "nginx-thrift",
+        "resource_type": "service",
+        "suggested_tools": [
+          "get_pods_from_service(nginx-thrift, namespace=test-social-network)",
+          "get_logs(<nginx-thrift-pod>, namespace=test-social-network)"
+        ]
+      },
+      "insights": [
+        "Single nginx-thrift pod (nginx-thrift-7fbb6d9b65-jh9ks) is handling all ingress traffic in namespace test-social-network",
+        "nginx-thrift logs show repeated failures when calling compose-post-service: frequent \"connect() failed: Connection refused\" errors and intermittent \"lua tcp socket read timed out\" entries",
+        "Logs include Thrift transport exceptions (/usr/local/openresty/lualib/thrift/Thrift.lua:37: TTransportException) indicating RPC-level failures on outbound calls",
+        "The combination of connection refusals and TCP read timeouts from nginx-thrift to compose-post-service explains ~1s+ added ingress latency due to connection/retry/timeouts at the ingress layer",
+        "Root cause: outgoing Thrift RPCs from nginx-thrift to compose-post-service are failing (service unresponsive or refusing connections), causing ingress latency; not an issue with nginx-thrift process itself but with its downstream dependency (compose-post-service) or network connectivity to it"
+      ],
+      "steps_performed": [
+        "Checked pods for service nginx-thrift using get_pods_from_service",
+        "Checked logs of pod nginx-thrift-7fbb6d9b65-jh9ks using get_logs",
+        "Analyzed nginx-thrift pod logs for outbound Thrift call errors",
+        "Correlated pod list and logs to determine traffic surface area (single nginx-thrift pod)"
+      ],
+      "tools_stats": {
+        "get_pods_from_service": 1,
+        "get_logs": 1,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 1: The nginx-thrift service in namespace test-social-network has one or more running pods; listing pods will give pod names to inspect logs for upstream timeouts or Thrift retries to compose-post-service. I'll list pods belonging to service \"nginx-thrift\".",
+          "tool_calls": [
+            {
+              "name": "get_pods_from_service",
+              "args": {
+                "service_name": "nginx-thrift"
+              },
+              "id": "call_VA0wc6Yla5qhOGTB9O54qib2",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n  \"service_name\": \"nginx-thrift\",\n  \"namespace\": \"test-social-network\",\n  \"pods\": [\n    {\n      \"pod_name\": \"nginx-thrift-7fbb6d9b65-jh9ks\",\n      \"pod_status\": \"Running\"\n    }\n  ]\n}"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "get_logs",
+              "args": {
+                "resource_name": "nginx-thrift-7fbb6d9b65-jh9ks",
+                "resource_type": "pod",
+                "tail": 500,
+                "important": false
+              },
+              "id": "call_LZkXefoSTacDgy0twl8snwHm",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "2025/12/12 07:57:58 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:57:59 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:57:59 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:00 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:01 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:02 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:03 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:04 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:05 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:06 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:07 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:08 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:09 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:10 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:11 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:12 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:13 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:14 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:15 [error] 18#18: *2 lua tcp socket read timed out, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:15 [error] 18#18: *2 [lua] compose.lua:65: ComposePost(): compost_post failure: /usr/local/openresty/lualib/thrift/Thrift.lua:37: TTransportException:0: Default (unknown), client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:16 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:17 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:19 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:20 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:21 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:22 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:23 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:24 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:25 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:26 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:27 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:28 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:28 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:29 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:30 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:31 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:32 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:33 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:34 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:35 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:36 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:37 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:38 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:39 [error] 18#18: *2 lua tcp socket read timed out, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:39 [error] 18#18: *2 [lua] compose.lua:65: ComposePost(): compost_post failure: /usr/local/openresty/lualib/thrift/Thrift.lua:37: TTransportException:0: Default (unknown), client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:40 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:41 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:43 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:44 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:45 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:46 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:47 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:48 [error] 24#24: *3 lua tcp socket read timed out, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:48 [error] 24#24: *3 [lua] compose.lua:65: ComposePost(): compost_post failure: /usr/local/openresty/lualib/thrift/Thrift.lua:37: TTransportException:0: Default (unknown), client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:49 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:50 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:51 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:52 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:53 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:54 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:55 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:56 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:57 [error] 18#18: *2 lua tcp socket read timed out, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:57 [error] 18#18: *2 [lua] compose.lua:65: ComposePost(): compost_post failure: /usr/local/openresty/lualib/thrift/Thrift.lua:37: TTransportException:0: Default (unknown), client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:58:59 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:00 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:00 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:01 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:02 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:03 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:04 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:05 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:06 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:07 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:08 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:09 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:10 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:11 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:12 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:13 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:14 [error] 24#24: *3 lua tcp socket read timed out, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:14 [error] 24#24: *3 [lua] compose.lua:65: ComposePost(): compost_post failure: /usr/local/openresty/lualib/thrift/Thrift.lua:37: TTransportException:0: Default (unknown), client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:15 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:16 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:17 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:18 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:19 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:21 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:22 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:23 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:23 [error] 18#18: *2 lua tcp socket read timed out, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:23 [error] 18#18: *2 [lua] compose.lua:65: ComposePost(): compost_post failure: /usr/local/openresty/lualib/thrift/Thrift.lua:37: TTransportException:0: Default (unknown), client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:24 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:26 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:27 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:28 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:29 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:30 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:31 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:32 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:33 [error] 24#24: *3 lua tcp socket read timed out, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:33 [error] 24#24: *3 [lua] compose.lua:65: ComposePost(): compost_post failure: /usr/local/openresty/lualib/thrift/Thrift.lua:37: TTransportException:0: Default (unknown), client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:34 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:35 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:36 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:37 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:38 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:39 [error] 24#24: *3 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:42 [error] 18#18: *2 lua tcp socket read timed out, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:42 [error] 18#18: *2 [lua] compose.lua:65: ComposePost(): compost_post failure: /usr/local/openresty/lualib/thrift/Thrift.lua:37: TTransportException:0: Default (unknown), client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:43 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:44 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:45 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:46 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:47 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:48 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:49 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:51 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:52 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:53 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:54 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:55 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:56 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:57 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:58 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 07:59:59 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:00 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:01 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:02 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:03 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:04 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:05 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:06 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:07 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:08 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:09 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:10 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:11 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:12 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:13 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:14 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:15 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:16 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:17 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:19 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:20 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:21 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:22 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:23 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:24 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:25 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:26 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:27 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:28 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:29 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:30 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:31 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:32 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:33 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:34 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:35 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:36 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:37 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:38 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:39 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:41 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:42 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:43 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:44 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:45 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:46 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:47 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:48 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:49 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:50 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:51 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:52 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:53 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:54 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:55 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:56 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:57 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:58 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:00:59 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:00 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:02 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:03 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:04 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:05 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:06 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:07 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:08 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:09 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:10 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:11 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:12 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:13 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:14 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:15 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:16 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:17 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:18 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:19 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:20 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:21 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:22 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:23 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:24 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:25 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:26 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:27 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:28 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:29 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:30 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:31 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:32 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:33 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:34 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n2025/12/12 08:01:35 [error] 18#18: *2 [lua] compose.lua:62: ComposePost(): compost_post failure: connect() failed: Connection refused, client: 10.244.1.38, server: localhost, request: \"POST /wrk2-api/post/compose HTTP/1.1\", host: \"10.96.21.196:8080\"\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "nginx-thrift ingress latency is caused by repeated failed outbound Thrift RPCs to compose-post-service: the nginx-thrift pod(s) are encountering connection refusals and TCP read timeouts when calling compose-post-service, causing Thrift transport exceptions and retry/timeout behavior at the ingress layer.",
+                "reasoning": "Evidence:\n1) get_pods_from_service: nginx-thrift in namespace test-social-network has a single running pod nginx-thrift-7fbb6d9b65-jh9ks (so all ingress traffic funnels through this instance).\n2) get_logs from nginx-thrift-7fbb6d9b65-jh9ks: repeated errors show \"ComposePost(): compost_post failure: connect() failed: Connection refused\" and intermittent \"lua tcp socket read timed out\" followed by \"/usr/local/openresty/lualib/thrift/Thrift.lua:37: TTransportException:0: Default (unknown)\" for POST /wrk2-api/post/compose. The frequency of these errors (many per second over the log window) indicates repeated failed outbound Thrift calls and timeouts to compose-post-service, which will directly add ~1s latency at ingress due to connection timeouts/retries."
+              },
+              "id": "call_YA1k2xalIZz0z1skwRrp5Uob",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    },
+    {
+      "diagnosis": "No evidence of a mismatched Thrift endpoint/port between nginx-thrift and compose-post-service. nginx-thrift is configured to call compose-post-service (dependency present), and the compose-post-service Kubernetes Service exposes port 9090 with endpoints at 10.244.1.14:9090, so the service-side port/name is correctly configured.",
+      "reasoning": "1) get_services_used_by(nginx-thrift) shows nginx-thrift depends on compose-post-service (nginx-thrift references the service by name).\n2) kubectl_describe(service/compose-post-service) shows Service Port=9090, TargetPort=9090 and Endpoints=10.244.1.14:9090. These two unique findings indicate the service is exposed on 9090 and nginx-thrift references that service; the available data contain no indication of a port/name mismatch. If timeouts persist, nginx-thrift's internal Thrift endpoint/host:port configuration (not returned by the provided tools) or pod-level network/readiness issues should be investigated next.",
+      "task": {
+        "priority": 2,
+        "status": "completed",
+        "investigation_goal": "Failure domain: dependency/config. Connection check (explicit two-sided): verify nginx-thrift's configured endpoint/URL/port for compose-post-service AND inspect compose-post-service Kubernetes Service for matching port/name. Hypothesis: mismatched port/name or wrong Thrift endpoint in nginx-thrift causes timeouts/retries to compose-post-service.",
+        "target_resource": "nginx-thrift <-> compose-post-service",
+        "resource_type": "service",
+        "suggested_tools": [
+          "get_services_used_by(nginx-thrift, namespace=test-social-network)",
+          "kubectl_describe(service/compose-post-service, namespace=test-social-network)"
+        ]
+      },
+      "insights": [
+        "nginx-thrift declares dependencies on compose-post-service (also user-timeline-service and home-timeline-service).",
+        "The Kubernetes Service compose-post-service (namespace: test-social-network) is ClusterIP 10.96.160.59 exposing port 9090 with TargetPort 9090 and has endpoints at 10.244.1.14:9090.",
+        "There is no evidence of a port/name mismatch between nginx-thrift and the compose-post-service: the service port and endpoints match (9090) \u2014 the mismatched Thrift endpoint hypothesis is disproven.",
+        "kubectl describe shows no events or configuration errors for the Service; the Service is configured and has an endpoint present.",
+        "Next steps if issues persist: investigate nginx-thrift's internal Thrift host:port configuration (not returned by the tools used), inspect the compose-post-service pod at 10.244.1.14 for application-level errors, and check pod-level networking, readiness/liveness probes, or logs for timeouts or connectivity failures."
+      ],
+      "steps_performed": [
+        "Checked services used by nginx-thrift using get_services_used_by",
+        "Analyzed nginx-thrift service dependencies (identified compose-post-service, user-timeline-service, home-timeline-service)",
+        "Checked Service compose-post-service using kubectl_describe",
+        "Analyzed compose-post-service ports, TargetPort, and Endpoints from kubectl_describe",
+        "Correlated data from get_services_used_by and kubectl_describe",
+        "Submitted final diagnosis using submit_final_diagnosis"
+      ],
+      "tools_stats": {
+        "get_services_used_by": 1,
+        "kubectl_describe": 1,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 1: nginx-thrift is configured to call compose-post-service at a specific Thrift endpoint/host:port/name; retrieving the services used by nginx-thrift will show the configured target for compose-post-service (host, port, and thrift service name) and reveal any port/name that could mismatch the Kubernetes Service.\n\nI'll call get_services_used_by for the nginx-thrift service in the test-social-network namespace.",
+          "tool_calls": [
+            {
+              "name": "get_services_used_by",
+              "args": {
+                "service": "nginx-thrift"
+              },
+              "id": "call_ULfjIHBM79nawpCEVYG6zBpP",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n  \"service\": \"nginx-thrift\",\n  \"services_used\": [\n    \"user-timeline-service\",\n    \"home-timeline-service\",\n    \"compose-post-service\"\n  ],\n  \"count\": 3,\n  \"summary\": \"Service 'nginx-thrift' uses 3 other services to complete its tasks\"\n}"
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 2: The Kubernetes Service \"compose-post-service\" exposes a port/name that does not match nginx-thrift's expected Thrift endpoint (e.g., service port is named or numbered differently). Describing the Service will show its ports, port names, targetPort, and selectors to confirm a mismatch. I'll describe the Service compose-post-service in namespace test-social-network.",
+          "tool_calls": [
+            {
+              "name": "kubectl_describe",
+              "args": {
+                "resourceType": "service",
+                "name": "compose-post-service",
+                "namespace": "test-social-network"
+              },
+              "id": "call_0gPWlKwcIySkSARsklSgtrrN",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Name:                     compose-post-service\nNamespace:                test-social-network\nLabels:                   app.kubernetes.io/managed-by=Helm\nAnnotations:              meta.helm.sh/release-name: social-network\n                          meta.helm.sh/release-namespace: test-social-network\nSelector:                 service=compose-post-service\nType:                     ClusterIP\nIP Family Policy:         SingleStack\nIP Families:              IPv4\nIP:                       10.96.160.59\nIPs:                      10.96.160.59\nPort:                     9090  9090/TCP\nTargetPort:               9090/TCP\nEndpoints:                10.244.1.14:9090\nSession Affinity:         None\nInternal Traffic Policy:  Cluster\nEvents:                   <none>\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "No evidence of a mismatched Thrift endpoint/port between nginx-thrift and compose-post-service. nginx-thrift is configured to call compose-post-service (dependency present), and the compose-post-service Kubernetes Service exposes port 9090 with endpoints at 10.244.1.14:9090, so the service-side port/name is correctly configured.",
+                "reasoning": "1) get_services_used_by(nginx-thrift) shows nginx-thrift depends on compose-post-service (nginx-thrift references the service by name).\n2) kubectl_describe(service/compose-post-service) shows Service Port=9090, TargetPort=9090 and Endpoints=10.244.1.14:9090. These two unique findings indicate the service is exposed on 9090 and nginx-thrift references that service; the available data contain no indication of a port/name mismatch. If timeouts persist, nginx-thrift's internal Thrift endpoint/host:port configuration (not returned by the provided tools) or pod-level network/readiness issues should be investigated next."
+              },
+              "id": "call_hcSsQd6rClLUtsqedz9gGZO7",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    },
+    {
+      "diagnosis": "user-mention-service has no configured dependency/endpoint for url-shorten-service (missing/misconfigured dependency), while url-shorten-service is exposed as a Kubernetes Service at ClusterIP 10.96.230.48:9090. This lack of a declared/usable endpoint in user-mention likely caused it to call the wrong/absent endpoint and trigger RPC failures/retries.",
+      "reasoning": "Evidence: 1) get_services_used_by(user-mention-service) returned services_used: [] (service declares 0 dependencies) \u2014 meaning user-mention has no recorded outbound endpoint for url-shorten. 2) kubectl_describe(service/url-shorten-service) shows url-shorten-service is reachable via ClusterIP 10.96.230.48 and port 9090 (TargetPort 9090, Endpoints 10.244.1.31:9090). Together these unique findings show a configuration/connection mismatch: url-shorten is available on :9090 but user-mention has no configured dependency to target it, supporting the hypothesis that user-mention is misconfigured/missing the correct endpoint and therefore failing RPC calls.",
+      "task": {
+        "priority": 3,
+        "status": "completed",
+        "investigation_goal": "Failure domain: dependency/config. Connection check (explicit two-sided) for user-mention -> url-shorten: verify user-mention-service's configured endpoint/URL/port for url-shorten-service AND inspect url-shorten-service Kubernetes Service for matching port/name. Hypothesis: user-mention is calling url-shorten with a wrong port/endpoint leading to RPC failures and triggering retries/back-and-forth calls.",
+        "target_resource": "user-mention-service -> url-shorten-service",
+        "resource_type": "service",
+        "suggested_tools": [
+          "get_services_used_by(user-mention-service, namespace=test-social-network)",
+          "kubectl_describe(service/url-shorten-service, namespace=test-social-network)"
+        ]
+      },
+      "insights": [
+        "user-mention-service has no declared outbound dependencies (get_services_used_by returned services_used: []).",
+        "url-shorten-service is present and reachable at ClusterIP 10.96.230.48:9090 with a backing endpoint 10.244.1.31:9090 (Service TargetPort 9090).",
+        "There is a configuration/connection mismatch: the cluster exposes url-shorten-service, but user-mention-service lacks a recorded/ configured dependency to reach it.",
+        "Initial hypothesis that user-mention-service would list url-shorten-service as an outbound dependency was disproven; instead user-mention is missing that configuration.",
+        "Root cause conclusion: application-level misconfiguration (missing/incorrect outbound dependency in user-mention-service) is the likely cause of the observed RPC failures/retries despite the url-shorten service being available in-cluster.",
+        "No Service events or other Service-layer errors were reported in the kubectl_describe output, indicating the problem is at the application configuration level rather than Service availability."
+      ],
+      "steps_performed": [
+        "Formulated hypothesis that user-mention-service should declare an outbound dependency on url-shorten-service and expose the configured endpoint.",
+        "Checked declared outbound dependencies for user-mention-service using get_services_used_by.",
+        "Analyzed the get_services_used_by result for user-mention-service (services_used: []).",
+        "Checked url-shorten-service Kubernetes Service in namespace test-social-network using kubectl_describe.",
+        "Analyzed url-shorten-service Service details (ClusterIP 10.96.230.48, Port 9090, TargetPort 9090, Endpoint 10.244.1.31:9090) from kubectl_describe.",
+        "Correlated data from get_services_used_by and kubectl_describe to compare application dependency configuration vs. cluster service availability.",
+        "Submitted final diagnosis via submit_final_diagnosis."
+      ],
+      "tools_stats": {
+        "get_services_used_by": 1,
+        "kubectl_describe": 1,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis for first call: user-mention-service's declared outbound dependencies will include url-shorten-service and will expose the configured endpoint/hostname:port that user-mention uses to reach url-shorten-service. I'll query the service dependency list for user-mention-service to get that configured endpoint.",
+          "tool_calls": [
+            {
+              "name": "get_services_used_by",
+              "args": {
+                "service": "user-mention-service"
+              },
+              "id": "call_bpHyuX43uICzbCqPZ8E7qdf7",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n  \"service\": \"user-mention-service\",\n  \"services_used\": [],\n  \"count\": 0,\n  \"summary\": \"Service 'user-mention-service' uses 0 other services to complete its tasks\"\n}"
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis for second call: The Kubernetes Service for url-shorten-service will show the port(s) and port names (e.g., thrift/http) and targetPort values; if these don't match the expected thrift port/name (what user-mention likely uses), it supports the misconfiguration hypothesis. I'll describe service/url-shorten-service in namespace test-social-network.",
+          "tool_calls": [
+            {
+              "name": "kubectl_describe",
+              "args": {
+                "resourceType": "service",
+                "name": "url-shorten-service",
+                "namespace": "test-social-network"
+              },
+              "id": "call_pNIz01kOi6MtBZHfcm3akXfE",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Name:                     url-shorten-service\nNamespace:                test-social-network\nLabels:                   app.kubernetes.io/managed-by=Helm\nAnnotations:              meta.helm.sh/release-name: social-network\n                          meta.helm.sh/release-namespace: test-social-network\nSelector:                 service=url-shorten-service\nType:                     ClusterIP\nIP Family Policy:         SingleStack\nIP Families:              IPv4\nIP:                       10.96.230.48\nIPs:                      10.96.230.48\nPort:                     9090  9090/TCP\nTargetPort:               9090/TCP\nEndpoints:                10.244.1.31:9090\nSession Affinity:         None\nInternal Traffic Policy:  Cluster\nEvents:                   <none>\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "user-mention-service has no configured dependency/endpoint for url-shorten-service (missing/misconfigured dependency), while url-shorten-service is exposed as a Kubernetes Service at ClusterIP 10.96.230.48:9090. This lack of a declared/usable endpoint in user-mention likely caused it to call the wrong/absent endpoint and trigger RPC failures/retries.",
+                "reasoning": "Evidence: 1) get_services_used_by(user-mention-service) returned services_used: [] (service declares 0 dependencies) \u2014 meaning user-mention has no recorded outbound endpoint for url-shorten. 2) kubectl_describe(service/url-shorten-service) shows url-shorten-service is reachable via ClusterIP 10.96.230.48 and port 9090 (TargetPort 9090, Endpoints 10.244.1.31:9090). Together these unique findings show a configuration/connection mismatch: url-shorten is available on :9090 but user-mention has no configured dependency to target it, supporting the hypothesis that user-mention is misconfigured/missing the correct endpoint and therefore failing RPC calls."
+              },
+              "id": "call_RrzhOyGp8YcA51cKVlvdTHZd",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    }
+  ],
+  "tasks_to_be_executed": [],
+  "final_report": {
+    "root_cause": "Primary root cause: compose-post-service was refusing or timing out Thrift connections from the single nginx-thrift ingress pod, causing repeated outbound RPC failures/timeouts at ingress (connect() failed: Connection refused and TCP read timeouts) and producing ~1s+ added latency and an errored request. Contributing root cause: user-mention-service is misconfigured (no declared outbound dependency) and is incorrectly calling/handling url-shorten-service, producing alternating/retried calls between user-mention-service and url-shorten-service that amplified end-to-end latency and error noise in the trace.",
+    "affected_resources": [
+      "nginx-thrift (service) -> pod nginx-thrift-7fbb6d9b65-jh9ks",
+      "compose-post-service (service) -> endpoint 10.244.1.14:9090",
+      "user-mention-service (service)",
+      "url-shorten-service (service) -> endpoint 10.244.1.31:9090",
+      "trace: 022438f0163983b5 (shows the end-to-end error/latency)"
+    ],
+    "evidence_summary": "1) nginx-thrift pod logs (nginx-thrift-7fbb6d9b65-jh9ks) show repeated outbound Thrift errors: \"ComposePost(): compost_post failure: connect() failed: Connection refused\" and intermittent \"lua tcp socket read timed out\" plus Thrift transport exceptions. 2) Trace 022438f0163983b5 shows a ~1019 ms errored request and repeated alternating calls: url-shorten-service <-> user-mention-service (indicating retry/loop). 3) kubectl_describe for compose-post-service shows the Service exposes port 9090 with an endpoint at 10.244.1.14:9090 (service exists), which rules out a Service-port/name mismatch. 4) get_services_used_by(user-mention-service) returned no declared outbound dependencies while kubectl_describe shows url-shorten-service is available at 10.96.230.48:9090, indicating an application-level misconfiguration in user-mention-service.",
+    "investigation_summary": "Priority-1 investigation (completed): inspected nginx-thrift pods and logs; found a single nginx-thrift pod receiving all ingress traffic and its logs contained frequent connection refusals and TCP read timeouts when calling compose-post-service \u2014 this explains the ~1s ingress latency and ingress-level Thrift retries/timeouts. Priority-2 investigation (completed): verified nginx-thrift declares compose-post-service as a dependency and confirmed compose-post-service Kubernetes Service exists and exposes port 9090 with endpoint 10.244.1.14:9090 \u2014 this disproves a simple Service port/name mismatch and points to the compose-post application or pod-level listen/address issue (or intermittent process failure) as the failing component. Priority-3 investigation (completed): examined user-mention-service dependencies and found it declares no outbound services; combined with the trace showing alternating url-shorten/user-mention calls, this indicates user-mention is misconfigured and is causing repeated/resurging calls to url-shorten-service, amplifying latency and errors. Overall conclusion: ingress latency and the errored trace were caused primarily by compose-post-service refusing connections (or not listening on the expected interface/port) and secondarily amplified by a misconfigured user-mention-service causing a retry/alternating-call pattern with url-shorten-service.",
+    "detection": true,
+    "localization": [
+      "compose-post-service",
+      "user-mention-service"
+    ]
+  },
+  "prompts_config": {
+    "triage_agent": "You are an expert Site Reliability Engineer. Your mission is to triage a Kubernetes application by analyzing the provided data.\n\nYour analysis must adhere to the following rules:\n1.  **Focus**: Identify symptoms at the **pod or service level only**. Do not provide cluster-wide analysis or generalizations.\n2.  **Aggregation**: For each pod or service that has issues, create **at most one symptom entry**. Aggregate all related evidence (from pods, metrics, traces) into that single entry.\n3.  **Action**: Synthesize the information to identify and list potential symptoms. For each symptom, pinpoint the affected resource (pod or service) and cite the specific evidence.\n4.  **Resource Naming**: In the `affected_resource` field, provide ONLY the exact resource name without any decorators, prefixes, or namespace qualifiers (e.g., use \"geo-6b4b89b5f5-rsrh7\" NOT \"test-hotel-reservation/geo-6b4b89b5f5-rsrh7\").\n5.  **Trace-Only Evidence**: If error traces are the only signals, still produce symptoms by identifying the service (or pod) that owns the failing span and summarizing the suspected issue using the trace error message. Avoid generic \"trace failed\" statements\u2014make the hypothesis explicit (e.g., \"checkout-service may have invalid credentials because trace X shows `401 Unauthorized` calling payment-service\").\n6.  **Empty State**: If the provided data contains no issues, it is correct to return an empty list of symptoms.",
+    "planner_agent": "\nYou are an expert Site Reliability Engineer. Produce a concise, de-duplicated investigation plan where each task inspects a precise part of the infrastructure to surface the most likely root-cause signals and converge on the true RCA quickly.\n\n**Toolkit**\n- `kubectl_get`: list Kubernetes resources and their status\n- `kubectl_describe`: inspect detailed spec/events for a resource\n- `get_pods_from_service`: map services to backing pods\n- `get_cluster_pods_and_services`: snapshot cluster topology\n- `get_logs`: retrieve recent pod or service logs\n- `get_traces`: fetch traces filtered by latency/errors\n- `get_trace`: inspect a single trace end-to-end\n- `get_metrics`: read current CPU/memory/network metrics\n- `get_metrics_range`: compare historical metric windows\n- `get_services_used_by`: discover downstream service calls\n- `get_dependencies`: enumerate external/infra dependencies\n\n**Planning Rules**\n1. For every symptom, classify the dominant failure domain (app, latency, dependency/config, or platform) and craft a single, testable hypothesis per resource.\n2. Use the `data_dependencies` and `infra_dependencies` JSON to ground every hypothesis. Merge overlapping symptoms into one task per resource.\n3. **Connections (non-negotiable):** Always create at least one task that inspects the connection between every pair of affected resources or the epicenter and its downstream dependents. These tasks must perform explicit two-sided checks (e.g., verify `service-a`'s config for `service-b`'s URL **and** inspect `service-b`'s Kubernetes service definition for the matching port/name) to catch login/URL/port misconfigurations.\n\n**Tool Selection**\n- Pick the minimum tool set (ideally one or two calls) needed to prove or disprove the hypothesis. Over-broad tool lists are rejected.\n\n**Priority Policy**\n- Assign unique priorities (1..N).\n- Priority 1 is the most direct epicenter investigation. Immediately after that, schedule the connection-check tasks described above; treat them as top-tier because they frequently surface misconfigurations.\n- Remaining priorities should rank other high-impact hypotheses (shared dependencies, severe crashes) ahead of narrow or low-scope checks.\n",
+    "rca_agent": "\nYou are an expert DevOps engineer performing focused Root Cause Analysis on a Kubernetes service.\n\nInstructions:\n1. Use ONLY the Priority Tools provided in the task. Do not propose or use tools outside this list.\n2. For each tool call, first formulate a clear, testable hypothesis about a possible root cause that can be answered by the result. Avoid broad or exploratory queries.\n3. Each tool call must provide unique, non-overlapping information. Never repeat requests with similar parameters or investigate the same aspect repeatedly in slightly different ways.\n4. Stop investigating, even if you have not reached the budget limit, when you have:\n   - Clear evidence that directly identifies a root cause (or definitively rules one out)\n   - Multiple data points indicating the same failure/cause\n   - Sufficient information to answer the investigation goal\n5. DO NOT:\n   - Repeat or re-run tools unless you are testing a truly new and justified hypothesis\n   - Query outside the given Target or Priority Tools\n   - Investigate unrelated resources or expand scope\n6. When you have gathered sufficient, non-redundant evidence (typically after 2-3 targeted tool calls), call submit_final_diagnosis with:\n   - diagnosis: State the precise root cause as it pertains to the investigation goal\n   - reasoning: Support your diagnosis by referencing unique findings from your tool calls\n\nREMEMBER: Quality over quantity. Focus on unique and conclusive findings rather than exhaustive or repetitive investigation.\n",
+    "supervisor_agent": "You are an expert Site Reliability Engineer analyzing RCA findings to determine the root cause of an incident.\n\nAnalyze all symptoms and investigation findings to:\n1. Identify patterns and correlations across findings\n2. Determine the primary root cause\n3. List all affected resources\n4. Summarize key evidence\n\n**Understanding Task Priority:**\nEach RCA investigation task has been assigned a priority level:\n- Priority 1 = Most important / Most likely to reveal root cause (investigated first)\n- Priority 2, 3, ... = Progressively lower importance\n- Tasks with lower priority numbers should generally have higher weight in your analysis\n- The priority reflects the likelihood that investigating that task/resource would uncover the root cause\n\nUse the priority information to contextualize findings: results from priority 1 tasks are typically more significant for determining root cause than lower priority investigations.\n\n**Detection & Localization Requirements:**\n- **detection**: Set to `true` if any problem/anomaly was detected in the cluster based on the evidence. Set to `false` only if no issues are found.\n- **localization**: Provide a list of ONLY the faulty/problematic components (service names or pod names) directly identified as the root cause. This should be a minimal, precise list - extract ONLY the specific resource(s) that caused the incident, not all affected resources.\n  - Example: If a service \"user-service\" has a misconfiguration causing downstream failures, localization = [\"user-service\"]\n  - Example: If a pod \"database-pod-xyz\" is failing, localization = [\"database-pod-xyz\"]\n  - Leave empty/null if the root cause cannot be localized to a specific service or pod.\n\n**Root Cause Expectations:**\n- Build a causal chain that connects symptoms, investigation evidence, and the precise failure mechanism\n- Cite concrete configuration or runtime details (e.g., \"service expects port 5432 but database listens on 5433\") when diagnosing misconfigurations or integration issues\n- If evidence stops at the symptom level, identify the missing proof and pursue it before finalizing\n\n**Strict Iteration Policy:**\nOnly request another RCA iteration when the existing evidence is insufficient to produce a confident final diagnosis. Never re-run or re-request tasks already marked as completed or currently in progress. When additional work is unavoidable, list only the minimal set of pending task priorities in `tasks_to_be_executed` and clearly justify why each is required. If the current findings support a solid root cause, leave `tasks_to_be_executed` empty and finalize the report.\n\nWhen you need more evidence, ask for the most targeted pending tasks that can close the causal gap (for example, verifying port mappings, credentials, or configuration values at both ends of a failing connection).\n\nProvide a clear, specific root cause statement that explains what caused the incident and why it happened now."
+  },
+  "experiment_name": "B - Plain React P3 B7 - Social Network - Assign Pod to Non-Existent Node (social-full-set-comparison)",
+  "agent_id": "B",
+  "agent_configuration_name": "B - Plain React P3 B7",
+  "stats": {
+    "run_id": "3f7a96d9-838f-4fc0-ac12-8a82669b05ab",
+    "experiment_name": "B - Plain React P3 B7 - Social Network - Assign Pod to Non-Existent Node (social-full-set-comparison)",
+    "status": "success",
+    "execution_time_seconds": 316.01122,
+    "total_tokens": 88550,
+    "total_cost": 0.036183999999999994,
+    "langsmith_url": "https://smith.langchain.com/o/abfc6d67-41f7-486b-956b-7589404f3bd1/projects/p/2264bd80-45a8-4ab7-b5b3-23b64980ca6f/r/3f7a96d9-838f-4fc0-ac12-8a82669b05ab?trace_id=3f7a96d9-838f-4fc0-ac12-8a82669b05ab&start_time=2025-12-12T08:07:41.154382",
+    "agent_stats": {
+      "supervisor_agent": {
+        "total_tokens": 6986,
+        "input_tokens": 4859,
+        "output_tokens": 2127,
+        "cost": 0.004254,
+        "runs_count": 1
+      },
+      "rca_agent": {
+        "total_tokens": 73143,
+        "input_tokens": 63278,
+        "output_tokens": 9865,
+        "cost": 0.019729999999999998,
+        "runs_count": 3
+      },
+      "schedule_rca_tasks": {
+        "total_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost": 0.0,
+        "runs_count": 1
+      },
+      "planner_agent": {
+        "total_tokens": 6317,
+        "input_tokens": 1504,
+        "output_tokens": 4813,
+        "cost": 0.009626,
+        "runs_count": 1
+      },
+      "triage_agent": {
+        "total_tokens": 2104,
+        "input_tokens": 817,
+        "output_tokens": 1287,
+        "cost": 0.002574,
+        "runs_count": 1
+      }
+    }
+  },
+  "testbed": {
+    "application_name": [
+      "Social Network"
+    ],
+    "fault_name": "Assign Pod to Non-Existent Node",
+    "target_namespace": "test-social-network",
+    "trace_service_starting_point": "nginx-thrift",
+    "rca_tasks_per_iteration": "3",
+    "max_tool_calls": "7"
+  },
+  "evaluation": {
+    "detection": true,
+    "localization": true,
+    "rca_score": 1,
+    "rca_motivation": "Ground truth is a misconfigured nodeSelector on the user-service deployment preventing pod scheduling. The agent talks about compose-post-service Thrift connection failures and a misconfigured user-mention-service/url-shorten-service dependency, involving entirely different components and mechanisms, with no relation to scheduling or nodeSelectors."
+  }
+}
