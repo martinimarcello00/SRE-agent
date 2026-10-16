@@ -62,6 +62,77 @@ from graph import parent_graph
 result = await parent_graph.ainvoke(initial_state)
 ```
 
+### Architecture selection and ablations
+
+The experiment runner uses the `architecture` field in an agent configuration:
+
+| Value | Workflow |
+|---|---|
+| Omitted or `"multi_agent"` | Multi-agent workflow with grounded planning (default). |
+| `"react_baseline"` | Single ReAct agent with all MCP tools. |
+| `"planner_no_grounding"` | Multi-agent workflow without DataGraph injection into the planner. |
+
+For example, this is a fragment of an agent configuration:
+
+```json
+{
+  "architecture": "planner_no_grounding",
+  "execute": false,
+  "MAX_TOOL_CALLS": 7,
+  "RCA_TASKS_PER_ITERATION": 2
+}
+```
+
+The complete [Planner No Grounding P2 B7 configuration](./experiments_runner/agent-configurations/planner-no-grounding-p2-b7.json)
+is paired with the [Plain React P2 B7 control](./experiments_runner/agent-configurations/plain-react-p2-b7.json).
+It preserves the control's budgets, concurrency, and non-planner prompts.
+It is disabled by default: set `"execute": true` only when preparing the desired experiment batch.
+Use identical scenarios, model, repetitions, and other runtime settings for the paired comparison.
+
+In this ablation, the planner skips dependency lookups and omits both service/data and
+infrastructure dependency sections. Its prompt grounds hypotheses in the supplied symptoms,
+evidence, and application context, without assuming known upstream/downstream relationships.
+Unknown relationships require planned discovery before connection validation; the planner
+itself does not execute tools. Omitted topology is not represented as "no dependencies found."
+
+Triage, RCA workers, supervisor, application summaries, symptom evidence, and tools remain
+unchanged. Therefore, evidence, application context, model prior knowledge, or later RCA tool
+calls may still reveal topology. This ablates automatic planner grounding, not all possible
+topology knowledge. Do not clear or disable the global DataGraph.
+
+For custom prompts, use `prompts_config["planner_no_grounding"]` to override the ablation
+planner prompt. The normal `prompts_config["planner_agent"]` override is ignored in this mode
+so that grounded instructions cannot accidentally be restored; it still applies in normal mode.
+
+Direct launcher usage:
+
+```python
+from launch_experiment import run_sre_agent
+
+result, execution_time = await run_sre_agent(
+    app_name="Hotel Reservation",
+    fault_name="Your fault scenario",
+    app_summary="Hotel reservation application",
+    target_namespace="test-hotel-reservation",
+    trace_service_starting_point="frontend",
+    architecture="planner_no_grounding",
+)
+```
+
+When calling `parent_graph.ainvoke(initial_state)` directly, add
+`initial_state["architecture"] = "planner_no_grounding"`. Direct graph invocation does not
+perform launcher validation; `run_sre_agent` raises `ValueError` for unsupported modes.
+The launcher records the selected mode in LangSmith metadata and the top-level
+`architecture` field of returned/exported results.
+
+Offline regression tests (no cluster, Neo4j, MCP server, or API key needed):
+
+```bash
+PYTHONPATH=. poetry run python tests/test_planner_no_grounding.py
+PYTHONPATH=. poetry run python tests/test_architecture_selection.py
+PYTHONPATH=. poetry run python tests/test_react_baseline.py
+```
+
 ### Modifying a Specific Component
 
 #### Change a Prompt

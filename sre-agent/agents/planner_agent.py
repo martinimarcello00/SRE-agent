@@ -18,7 +18,7 @@ from api.k8s_api import K8sAPI
 from api.datagraph import DataGraph
 
 from models import PlannerAgentState, RCATaskList, Symptom
-from prompts import PLANNER_SYSTEM_PROMPT, PLANNER_HUMAN_PROMPT
+from prompts import PLANNER_SYSTEM_PROMPT, PLANNER_HUMAN_PROMPT, PLANNER_NO_GROUNDING_SYSTEM_PROMPT
 from config import GPT5_MINI
 from utils import get_system_prompt
 
@@ -80,7 +80,7 @@ def get_resource_dependencies(symptom: Symptom) -> dict:
 
 
 def planner_agent(state: PlannerAgentState) -> dict:
-    """Create RCA investigation tasks from symptoms and their dependencies.
+    """Create RCA tasks, optionally without injected dependency grounding.
     
     Args:
         state: Current planner agent state with identified symptoms
@@ -93,12 +93,13 @@ def planner_agent(state: PlannerAgentState) -> dict:
     if not symptoms:
         return {"rca_tasks": []}
     
-    # Enrich symptoms with dependencies
+    no_grounding = state.get("architecture") == "planner_no_grounding"
+
     enriched_symptoms = []
     for symptom in symptoms:
         enriched = {
             "symptom": symptom.model_dump(),
-            "dependencies": get_resource_dependencies(symptom)
+            "dependencies": {} if no_grounding else get_resource_dependencies(symptom)
         }
         enriched_symptoms.append(enriched)
     
@@ -116,19 +117,19 @@ def planner_agent(state: PlannerAgentState) -> dict:
             f"**Evidence**:\n{symptom_dict['evidence']}\n\n"
         ])
         
-        # Add dependencies if they exist
-        if "data_dependencies" in deps and deps["data_dependencies"]:
-            symptoms_info_parts.append(f"**Data Dependencies**:\n```json\n{json.dumps(deps['data_dependencies'], indent=2)}\n```\n\n")
-        else:
-            symptoms_info_parts.append(f"**Data Dependencies**:\nNo data dependencies found for the affected resource\n\n")
-        
-        if "infra_dependencies" in deps and deps["infra_dependencies"]:
-            symptoms_info_parts.append(f"**Infrastructure Dependencies**:\n```json\n{json.dumps(deps['infra_dependencies'], indent=2)}\n```\n\n")
-        else:
-            symptoms_info_parts.append(f"**Infrastructure Dependencies**:\nNo infrastructure dependencies found for the affected resource\n\n")
+        if not no_grounding:
+            if "data_dependencies" in deps and deps["data_dependencies"]:
+                symptoms_info_parts.append(f"**Data Dependencies**:\n```json\n{json.dumps(deps['data_dependencies'], indent=2)}\n```\n\n")
+            else:
+                symptoms_info_parts.append(f"**Data Dependencies**:\nNo data dependencies found for the affected resource\n\n")
 
-        if "data_dependencies" not in deps and "infra_dependencies" not in deps:
-            symptoms_info_parts.append("**Dependencies**: None found\n\n")
+            if "infra_dependencies" in deps and deps["infra_dependencies"]:
+                symptoms_info_parts.append(f"**Infrastructure Dependencies**:\n```json\n{json.dumps(deps['infra_dependencies'], indent=2)}\n```\n\n")
+            else:
+                symptoms_info_parts.append(f"**Infrastructure Dependencies**:\nNo infrastructure dependencies found for the affected resource\n\n")
+
+            if "data_dependencies" not in deps and "infra_dependencies" not in deps:
+                symptoms_info_parts.append("**Dependencies**: None found\n\n")
 
         
         symptoms_info_parts.append("---\n\n")
@@ -140,7 +141,11 @@ def planner_agent(state: PlannerAgentState) -> dict:
 
     logger.info("Planner Agent: Finding investigation plan (RCA task list)")
 
-    planner_system_prompt = get_system_prompt(state, "planner_agent", PLANNER_SYSTEM_PROMPT) #type: ignore
+    prompt_key = "planner_no_grounding" if no_grounding else "planner_agent"
+    default_prompt = PLANNER_NO_GROUNDING_SYSTEM_PROMPT if no_grounding else PLANNER_SYSTEM_PROMPT
+    planner_system_prompt = get_system_prompt(state, prompt_key, default_prompt) #type: ignore
+    if no_grounding:
+        logger.info("Planner Agent: DataGraph grounding disabled")
 
     planner_prompt_template = ChatPromptTemplate.from_messages(
     [

@@ -50,16 +50,28 @@ async def run_sre_agent(
         target_namespace: Kubernetes namespace to investigate
         trace_service_starting_point: Service name to start trace analysis
         trace_name: Optional name for the execution trace
-        architecture: "react_baseline" runs the single ReAct agent (ablation); default is the multi-agent parent graph
+        architecture: None or "multi_agent" runs the grounded multi-agent graph;
+            "react_baseline" runs the single ReAct agent;
+            "planner_no_grounding" runs the multi-agent graph without planner DataGraph injection.
 
     Returns:
         Tuple of (result dictionary, execution time in seconds)
+
+    Raises:
+        ValueError: If architecture is not a supported mode.
     """
+
+    selected_architecture = "multi_agent" if architecture is None else architecture
+    if selected_architecture not in {
+        "multi_agent", "react_baseline", "planner_no_grounding"
+    }:
+        raise ValueError(f"Unsupported architecture: {selected_architecture!r}")
 
     if not prompts_config:
         prompts_config = {}
 
     initial_state = SreParentState(
+        architecture=selected_architecture,
         app_name=app_name,
         app_summary=app_summary,
         target_namespace=target_namespace,
@@ -77,7 +89,7 @@ async def run_sre_agent(
     )
 
     graph = parent_graph
-    if architecture == "react_baseline":
+    if selected_architecture == "react_baseline":
         graph = react_baseline_graph
         initial_state["messages"] = []  # type: ignore
 
@@ -99,7 +111,7 @@ async def run_sre_agent(
             "fault_name" : fault_name,
             "agent_configuration": agent_configuration_name,
             "agent_id" : agent_id,
-            "architecture": architecture or "multi_agent",
+            "architecture": selected_architecture,
             "parallel_rca_tasks": os.environ.get("RCA_TASKS_PER_ITERATION","Unknown"),
             "max_tool_calls": os.environ.get("MAX_TOOL_CALLS","Unknown")
         }
@@ -113,7 +125,8 @@ async def run_sre_agent(
 
     if graph is react_baseline_graph:
         result.pop("messages", None)  # already exported as rca_analyses_list[0]["message_history"]
-    
+
+    result["architecture"] = selected_architecture
     return result, execution_time
 
 def get_experiment_metrics(experiment_name: str, exec_time: float | int) -> dict:
