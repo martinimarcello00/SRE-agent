@@ -58,7 +58,16 @@ result, seconds = asyncio.run(launch_experiment.run_sre_agent(
     app_name="x", fault_name="f", app_summary="s", target_namespace="ns", trace_service_starting_point="frontend",
     trace_name="test", agent_configuration_name="M", agent_id="M", architecture="react_baseline"))
 assert result["final_report"]["localization"] == ["a"]
-assert "messages" not in result
+assert "messages" not in result and result["architecture"] == "react_baseline"
+
+# an unknown architecture fails before any graph runs, instead of silently running multi_agent
+try:
+    asyncio.run(launch_experiment.run_sre_agent(
+        app_name="x", fault_name="f", app_summary="s", target_namespace="ns", trace_service_starting_point="frontend",
+        trace_name="test", agent_configuration_name="N", agent_id="N", architecture="planner_no_grounding_typo"))
+    raise AssertionError("unknown architecture accepted")
+except ValueError:
+    pass
 
 launch_experiment.get_experiment_metrics = lambda *_, **__: {}  # needs LangSmith
 exported = launch_experiment.export_json_results(
