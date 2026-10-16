@@ -28,6 +28,9 @@ assert loc(user, "pod/user-8477d787d8-9657r (container: hotel-reserv-user), Repl
 assert loc(geo, "hotel-reserv-geo container in pod geo-6b4b89b5f5-hlpqn (application config: wrong port)")
 assert loc(geo, "pod/geo-99d8c58c-lswlc:hotel-reserv-geo") and loc(geo, "replicaset/geo-6b4b89b5f5")
 assert loc(geo, "mongodb-geo (MongoDB instance) — MongoDB user/role for geo service lacks privileges on 'geo-db'")
+# A container image names its service; image-provider stays a service of its own
+assert loc({"target": "geo"}, "deployment/geo, image yinfangchen/geo:app3 (baked-in DB URL mongodb-geo:27777)")
+assert loc({"target": "image-provider"}, "image-provider-79dbdd7cf4-gnmjv")
 assert loc(rate, "rate-c9bc58c85-twl27 (pod) - container hotel-reserv-rate") and loc(rate, "replicaset/rate-c9bc58c85")
 assert loc(rate, "pod/rate-c9bc58c85-twl27 (container: hotel-reserv-rate), hotel-reserv-rate (Deployment/Service) — auth fails")
 assert loc(rate, "pod/mongodb-rate-56cc8659c9-x2k9p") and not loc({"target": "rate", "accepted_targets": ["rate"]}, "mongodb-rate")

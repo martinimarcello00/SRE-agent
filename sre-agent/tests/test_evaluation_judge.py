@@ -35,10 +35,13 @@ assert ev.evaluate_rca_analysis(scenario, "  ")[0] == 1 and FakeJudge.calls == 0
 ev.get_today_model_usage = lambda **kw: {"total_tokens": 100}
 assert ev.evaluate_rca_analysis(scenario, "cart cannot reach valkey")[0] == 4 and FakeJudge.calls == 1
 
-# No fault: "no analysis" is the correct answer, so it is not auto-scored 1
-assert ev.evaluate_rca_analysis({"RCA_gt": "gt", "target": None}, "No analysis data available")[0] == 4 and FakeJudge.calls == 2
+# No fault is scored without the judge: 5 when nothing is reported, 1 for a false positive
+no_fault = {"RCA_gt": "gt", "target": None}
+assert ev.evaluate_rca_analysis(no_fault, "No analysis data available")[0] == 5
+assert ev.evaluate_rca_analysis(no_fault, "")[0] == 5
+assert ev.evaluate_rca_analysis(no_fault, "shipping has intermittent latency")[0] == 1 and FakeJudge.calls == 1
 
 ev.get_today_model_usage = lambda **kw: {"total_tokens": ev.GPT5_1_TOKEN_DAILY_LIMIT + 1}
 score, msg = ev.evaluate_rca_analysis(scenario, "cart cannot reach valkey")
-assert score is None and "exceeded" in msg and FakeJudge.calls == 2
+assert score is None and "exceeded" in msg and FakeJudge.calls == 1
 print("ok")

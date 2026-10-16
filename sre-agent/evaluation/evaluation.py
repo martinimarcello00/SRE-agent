@@ -42,6 +42,9 @@ POD_HASH = re.compile(rf"-[{K8S}]{{5,10}}(?:-[a-z0-9]{{5}})?$")
 # The "kind/x" form is handled later by keeping the last "/" segment.
 KIND = re.compile(r"^(?:pod|deployment|service|svc|replicaset|statefulset|daemonset|container|namespace"
                   r"|persistentvolumeclaim|pvc|secret|configmap|endpoints?)s?:\s*")
+# Leading "image " / "image:" before a container image reference: "image yinfangchen/geo:app3" -> "yinfangchen/geo:app3",
+# whose last "/" segment without the tag is the service. "image-provider" (an Astronomy service) is not touched.
+IMAGE = re.compile(r"^image(?::\s*|\s+)")
 # Application prefixes in front of the service name: Hotel container names ("hotel-reserv-geo") and
 # Astronomy Shop names prefixed with the Helm release ("astronomy-shop-adservice", "opentelemetry-demo-ad").
 PREFIX = re.compile(r"^(?:hotel-reserv|astronomy-shop|opentelemetry-demo|otel-demo)-")
@@ -52,7 +55,7 @@ FILLER = {"the", "a", "an", "service", "microservice", "svc", "deployment", "pod
 def normalize_service(name: str) -> str:
     """'Deployment/Payment-Service', 'pod:payment-7d9f8b6c5-x2k9p', 'Product Catalog service' -> service name."""
     s = re.split(r"\s[—–-]\s|\s*\(", name.strip().lower(), maxsplit=1)[0]  # cut "(annotation" / " — free text"
-    s = KIND.sub("", s)  # "pod:user-8477d787d8-2nhtl" -> "user-8477d787d8-2nhtl"
+    s = IMAGE.sub("", KIND.sub("", s))  # "pod:user-8477d787d8-2nhtl" -> "user-8477d787d8-2nhtl"
     words = s.split()
     if len(words) > 1 and all(w.isalpha() for w in words):  # "Product Catalog service" -> product-catalog
         s = "-".join(w for w in words if w not in FILLER)
@@ -110,8 +113,14 @@ def evaluate_rca_analysis(fault_scenario: dict, rca_analysis: str, langsmith_met
     Returns:
         tuple[Optional[int], str]: A tuple containing the evaluation score (or None on error) and an explanation string.
     """
-    # Only a missed fault: in No fault, "no analysis" is the correct answer (the notebook leaves No fault out of RCA means)
-    if fault_scenario.get("target") and (not rca_analysis.strip() or rca_analysis.strip() == NO_ANALYSIS):
+    no_analysis = not rca_analysis.strip() or rca_analysis.strip() == NO_ANALYSIS
+    # No fault is scored without the judge: the rubric compares against an injected fault, so it scored
+    # the correct empty answer 1 and gave the same answer anywhere from 1 to 5 across runs.
+    if not fault_scenario.get("target"):
+        if no_analysis:
+            return 5, "No fault was injected and the agent reported none; judge not called."
+        return 1, "No fault was injected but the agent reported a root cause; judge not called."
+    if no_analysis:
         return 1, "No analysis was produced; judge not called."
 
     token_usage = get_today_model_usage(model_name=GPT5_1_NAME)
