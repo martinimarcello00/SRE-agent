@@ -1,0 +1,531 @@
+{
+  "architecture": "planner_no_grounding",
+  "app_name": "Social Network",
+  "app_summary": "A social network with unidirectional follow relationships, implemented with loosely-coupled microservices, communicating with each other via Thrift RPCs. Supported Operations: Create text post (optional media: image, video, shortened URL, user tag), Read post, Read entire user timeline, Receive recommendations on which users to follow, Search database for user or post, Register/Login using user credentials, Follow/Unfollow user",
+  "target_namespace": "test-social-network",
+  "trace_service_starting_point": "nginx-thrift",
+  "problematic_pods": {
+    "problematic_pods": [],
+    "info": "No problematic pods detected based on status analysis. All pods appear healthy."
+  },
+  "slow_traces": {
+    "service": "nginx-thrift",
+    "traces": [
+      {
+        "traceID": "0000d6219f76fd64",
+        "latency_ms": 6.446,
+        "has_error": true,
+        "sequence": "nginx-thrift -> compose-post-service -> media-service -> user-service -> text-service -> unique-id-service -> text-service -> user-mention-service -> url-shorten-service -> user-mention-service -> compose-post-service",
+        "error_message": "N/A"
+      },
+      {
+        "traceID": "021cdeebd509d9d0",
+        "latency_ms": 6.145,
+        "has_error": true,
+        "sequence": "nginx-thrift -> compose-post-service -> user-service -> unique-id-service -> text-service -> media-service -> text-service -> url-shorten-service -> user-mention-service -> compose-post-service",
+        "error_message": "N/A"
+      }
+    ],
+    "traces_count": 2
+  },
+  "problematic_metrics": {
+    "problematic_metrics": [],
+    "info": "All monitored metrics look healthy; no anomalous values detected."
+  },
+  "problematic_traces": {
+    "service": "nginx-thrift",
+    "traces": [
+      {
+        "traceID": "013ff392264de7f0",
+        "latency_ms": 5.76,
+        "has_error": true,
+        "sequence": "nginx-thrift -> compose-post-service -> text-service -> media-service -> user-service -> unique-id-service -> text-service -> user-mention-service -> url-shorten-service -> user-mention-service -> compose-post-service",
+        "error_message": "N/A"
+      },
+      {
+        "traceID": "021cdeebd509d9d0",
+        "latency_ms": 6.145,
+        "has_error": true,
+        "sequence": "nginx-thrift -> compose-post-service -> user-service -> unique-id-service -> text-service -> media-service -> text-service -> url-shorten-service -> user-mention-service -> compose-post-service",
+        "error_message": "N/A"
+      },
+      {
+        "traceID": "0000d6219f76fd64",
+        "latency_ms": 6.446,
+        "has_error": true,
+        "sequence": "nginx-thrift -> compose-post-service -> media-service -> user-service -> text-service -> unique-id-service -> text-service -> user-mention-service -> url-shorten-service -> user-mention-service -> compose-post-service",
+        "error_message": "N/A"
+      }
+    ],
+    "traces_count": 3
+  },
+  "symptoms": [
+    {
+      "potential_symptom": "Gateway (nginx-thrift) traces show error flags and elevated end-to-end latency, indicating downstream RPC failures or missing error propagation at the Thrift ingress.",
+      "resource_type": "service",
+      "affected_resource": "nginx-thrift",
+      "evidence": "traces_count=2; traceIDs: 0000d6219f76fd64 (latency_ms=6.446, has_error=true), 021cdeebd509d9d0 (latency_ms=6.145, has_error=true); error_message reported as 'N/A' on both; sequences show nginx-thrift -> compose-post-service -> ... -> compose-post-service, indicating errors surfaced during the compose-post call flow."
+    },
+    {
+      "potential_symptom": "compose-post-service is involved in both error traces as the primary orchestrator and may be propagating or failing to handle downstream RPC errors during post composition.",
+      "resource_type": "service",
+      "affected_resource": "compose-post-service",
+      "evidence": "Appears in both traces' sequences (traceIDs: 0000d6219f76fd64, 021cdeebd509d9d0) directly after nginx-thrift and again at the end of the sequence, suggesting orchestration of multiple downstream calls and that errors/latency occur while aggregating responses from downstream services (has_error=true on both traces)."
+    },
+    {
+      "potential_symptom": "text-service is called multiple times within the same traces (nested or repeated invocations), which may indicate redundant calls or retry loops contributing to errors/latency.",
+      "resource_type": "service",
+      "affected_resource": "text-service",
+      "evidence": "In trace 0000d6219f76fd64 sequence: ... -> text-service -> unique-id-service -> text-service -> ...; in trace 021cdeebd509d9d0 sequence: ... -> unique-id-service -> text-service -> media-service -> text-service -> ...; both traces have has_error=true and similar elevated latencies (6.446ms, 6.145ms)."
+    },
+    {
+      "potential_symptom": "user-mention-service appears multiple times in the call sequences, suggesting duplicate or retry invocations that may be contributing to the observed trace errors.",
+      "resource_type": "service",
+      "affected_resource": "user-mention-service",
+      "evidence": "In trace 0000d6219f76fd64 sequence: ... -> user-mention-service -> url-shorten-service -> user-mention-service -> ...; in trace 021cdeebd509d9d0 sequence: ... -> url-shorten-service -> user-mention-service -> compose-post-service; both traces flagged has_error=true (traceIDs: 0000d6219f76fd64, 021cdeebd509d9d0)."
+    }
+  ],
+  "rca_tasks": [
+    {
+      "priority": 1,
+      "status": "in_progress",
+      "investigation_goal": "Domain: app. Hypothesis: compose-post-service (orchestrator) is generating duplicate downstream calls or not handling downstream RPC errors (timeouts/retries) causing elevated end-to-end latency and errors seen by nginx-thrift. Verify compose-post-service pod health, recent logs for retry/timeout/error handling, and span-level errors in traces tied to its pods.",
+      "target_resource": "compose-post-service",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_pods_from_service compose-post-service --namespace=test-social-network",
+        "get_logs <compose-post-pod> --namespace=test-social-network"
+      ]
+    },
+    {
+      "priority": 2,
+      "status": "in_progress",
+      "investigation_goal": "Domain: dependency/config. Hypothesis: nginx-thrift -> compose-post-service mapping (URL/port/name) or timeout/Thrift-client config is incorrect, causing nginx-thrift to surface generic errors. Perform two-sided check: inspect nginx-thrift upstream/Thrift-ingress config for compose-post endpoint and inspect compose-post-service Kubernetes Service (selector/port) for a matching target.",
+      "target_resource": "nginx-thrift <-> compose-post-service (connection)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "kubectl_describe service/nginx-thrift --namespace=test-social-network",
+        "kubectl_describe service/compose-post-service --namespace=test-social-network"
+      ]
+    },
+    {
+      "priority": 3,
+      "status": "pending",
+      "investigation_goal": "Domain: dependency/config. Hypothesis: compose-post-service client config for text-service (endpoint, port, timeout, retry policy) doesn't match text-service's Service definition causing misrouted calls or unintended retries. Two-sided check: inspect compose-post-service config/env for text-service URL and describe text-service Kubernetes Service for port/name.",
+      "target_resource": "compose-post-service <-> text-service (connection)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "kubectl_describe deployment/compose-post-service --namespace=test-social-network",
+        "kubectl_describe service/text-service --namespace=test-social-network"
+      ]
+    },
+    {
+      "priority": 4,
+      "status": "pending",
+      "investigation_goal": "Domain: dependency/config. Hypothesis: compose-post-service client config for user-mention-service (endpoint, timeout/retries) mismatched with user-mention-service's Service leading to duplicate/in-flight calls and error propagation. Two-sided check: review compose-post-service config for user-mention URL and describe user-mention-service Service.",
+      "target_resource": "compose-post-service <-> user-mention-service (connection)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "kubectl_describe deployment/compose-post-service --namespace=test-social-network",
+        "kubectl_describe service/user-mention-service --namespace=test-social-network"
+      ]
+    },
+    {
+      "priority": 5,
+      "status": "pending",
+      "investigation_goal": "Domain: app. Hypothesis: text-service is performing nested or redundant calls (calling unique-id/media services multiple times) or retrying on transient errors, contributing to latency and errors. Verify text-service pod health, recent logs for repeated call patterns/retries/exceptions, and correlate with spans in traces.",
+      "target_resource": "text-service",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_pods_from_service text-service --namespace=test-social-network",
+        "get_logs <text-service-pod> --namespace=test-social-network"
+      ]
+    },
+    {
+      "priority": 6,
+      "status": "pending",
+      "investigation_goal": "Domain: app. Hypothesis: user-mention-service is being invoked multiple times due to either a compose-post orchestration bug or internal retry logic; it may be failing or returning transient errors that cause retries. Check user-mention-service pods and logs for repeated invocation patterns, error traces, or retry loops.",
+      "target_resource": "user-mention-service",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_pods_from_service user-mention-service --namespace=test-social-network",
+        "get_logs <user-mention-pod> --namespace=test-social-network"
+      ]
+    },
+    {
+      "priority": 7,
+      "status": "pending",
+      "investigation_goal": "Domain: dependency/latency. Hypothesis: text-service -> unique-id-service interaction is causing nested calls seen in traces (text-service calls unique-id-service then calls text-service again) due to miswired client endpoints or a synchronous loop. Two-sided check: inspect text-service config for unique-id endpoint and describe unique-id-service Kubernetes Service for matching port/name; then sample logs on both sides if mismatch found.",
+      "target_resource": "text-service <-> unique-id-service (connection)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "kubectl_describe deployment/text-service --namespace=test-social-network",
+        "kubectl_describe service/unique-id-service --namespace=test-social-network"
+      ]
+    },
+    {
+      "priority": 8,
+      "status": "pending",
+      "investigation_goal": "Domain: dependency. Hypothesis: unique-id-service may be returning errors or slow responses causing callers to retry (visible as repeated text-service spans). Verify unique-id-service pod health, recent logs for errors/latency, and basic metrics if available.",
+      "target_resource": "unique-id-service",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_pods_from_service unique-id-service --namespace=test-social-network",
+        "get_logs <unique-id-pod> --namespace=test-social-network"
+      ]
+    },
+    {
+      "priority": 9,
+      "status": "pending",
+      "investigation_goal": "Domain: dependency/latency. Hypothesis: text-service -> media-service interaction may be causing repeated text-service invocations (e.g., media-service timeouts trigger retries). Two-sided check: inspect text-service config for media-service endpoint and describe media-service Service for port/name; sample media-service pods/logs if mismatch or errors found.",
+      "target_resource": "text-service <-> media-service (connection)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "kubectl_describe deployment/text-service --namespace=test-social-network",
+        "kubectl_describe service/media-service --namespace=test-social-network"
+      ]
+    },
+    {
+      "priority": 10,
+      "status": "pending",
+      "investigation_goal": "Domain: dependency. Hypothesis: media-service may be slow/failing (image/video handling) and causing upstream retries or aggregated errors in compose-post flow. Check media-service pods and logs for errors, OOMs, or timeouts.",
+      "target_resource": "media-service",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_pods_from_service media-service --namespace=test-social-network",
+        "get_logs <media-service-pod> --namespace=test-social-network"
+      ]
+    },
+    {
+      "priority": 11,
+      "status": "pending",
+      "investigation_goal": "Domain: dependency/config. Hypothesis: user-mention-service <-> url-shorten-service interaction is producing duplicate calls (user-mention-service calling url-shorten-service and vice-versa in traces) because of misconfigured endpoint or circular invocation. Two-sided check: inspect user-mention-service config for url-shorten endpoint and describe url-shorten-service Service for matching port/name.",
+      "target_resource": "user-mention-service <-> url-shorten-service (connection)",
+      "resource_type": "service",
+      "suggested_tools": [
+        "kubectl_describe deployment/user-mention-service --namespace=test-social-network",
+        "kubectl_describe service/url-shorten-service --namespace=test-social-network"
+      ]
+    },
+    {
+      "priority": 12,
+      "status": "pending",
+      "investigation_goal": "Domain: dependency. Hypothesis: url-shorten-service may be experiencing transient failures or returning unexpected errors leading to retries/cascading calls; verify pods, logs and error rates to rule it in/out as the root cause.",
+      "target_resource": "url-shorten-service",
+      "resource_type": "service",
+      "suggested_tools": [
+        "get_pods_from_service url-shorten-service --namespace=test-social-network",
+        "get_logs <url-shorten-pod> --namespace=test-social-network"
+      ]
+    }
+  ],
+  "rca_analyses_list": [
+    {
+      "diagnosis": "compose-post-service (pod compose-post-service-64f6c9b656-tlp4g) is repeatedly failing Thrift connections to post-storage-service:9090 (Connection refused), causing rapid repeated downstream retry attempts that are producing elevated end-to-end latency and errors observed by nginx-thrift.",
+      "reasoning": "1) Pod list: compose-post-service has a single pod (compose-post-service-64f6c9b656-tlp4g) and is Running \u2014 no CrashLoopBackOff or pod restarts, so pod health isn't the root cause.\n2) Pod logs (important entries, Oct 16 20:20:26\u201320:20:36) show numerous repeated lines: 'TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused' and '(ClientPool.h:114:Pop) Failed to connect post-storage-client'. The frequency and repetition indicate the service is retrying connection attempts rapidly when the downstream post-storage-service is unreachable. These repeated downstream failures/retries explain elevated latency and propagated errors upstream to nginx-thrift.",
+      "task": {
+        "priority": 1,
+        "status": "completed",
+        "investigation_goal": "Domain: app. Hypothesis: compose-post-service (orchestrator) is generating duplicate downstream calls or not handling downstream RPC errors (timeouts/retries) causing elevated end-to-end latency and errors seen by nginx-thrift. Verify compose-post-service pod health, recent logs for retry/timeout/error handling, and span-level errors in traces tied to its pods.",
+        "target_resource": "compose-post-service",
+        "resource_type": "service",
+        "suggested_tools": [
+          "get_pods_from_service compose-post-service --namespace=test-social-network",
+          "get_logs <compose-post-pod> --namespace=test-social-network"
+        ]
+      },
+      "insights": [
+        "compose-post-service has a single pod (compose-post-service-64f6c9b656-tlp4g) which is Running \u2014 there were no CrashLoopBackOffs or pod restarts, so pod health was not the immediate root cause",
+        "Pod logs contain numerous repeated Thrift connection failures: 'TSocket::open() ... Connection refused' targeting post-storage-service on port 9090 and repeated '(ClientPool.h:114:Pop) Failed to connect post-storage-client' messages",
+        "The connection-refused errors occur at high frequency (many occurrences observed between 2026-10-16 20:20:26 and 20:20:36), indicating aggressive/rapid retry behavior from compose-post-service",
+        "Correlation indicates the immediate cause of elevated latency and propagated errors upstream (observed by nginx-thrift) is the downstream post-storage-service being unreachable/refusing connections on port 9090 at that time",
+        "Confirmed/disproven hypotheses: the hypothesis that pods were unhealthy/restarting was disproven (pod is Running); the hypothesis that pod logs would show Thrift RPC failures and retries was confirmed (logs contain repeated connection refused and failed-connection entries)",
+        "Causal relationship: compose-post-service depends on post-storage-service (Thrift on port 9090); downstream unavailability led to retry storms from the single compose-post-service pod, amplifying end-to-end latency and errors"
+      ],
+      "steps_performed": [
+        "Analyzed hypothesis that pods behind compose-post-service might be unhealthy or restarting causing downstream retries/duplicate RPCs and elevated latency",
+        "Checked pods for service compose-post-service in namespace test-social-network using get_pods_from_service",
+        "Analyzed get_pods_from_service output: observed a single pod (compose-post-service-64f6c9b656-tlp4g) in Running state",
+        "Analyzed hypothesis that pod logs would show Thrift RPC connection/refusal errors and repeated retries",
+        "Checked logs for pod compose-post-service-64f6c9b656-tlp4g using get_logs (tail=500, important=true)",
+        "Analyzed pod logs from compose-post-service-64f6c9b656-tlp4g and extracted important log entries",
+        "Correlated data from get_pods_from_service and get_logs (pod Running + repeated downstream connection failures)",
+        "Submitted final diagnosis using submit_final_diagnosis"
+      ],
+      "tools_stats": {
+        "get_pods_from_service": 1,
+        "get_logs": 1,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 1: One or more pods behind compose-post-service are unhealthy or restarting (CrashLoopBackOff / NotReady), which could cause retrying or duplicate downstream RPCs and elevated latency. I'll list pods for the service to check their status and restart counts. I'll query the service's pods in namespace test-social-network.",
+          "tool_calls": [
+            {
+              "name": "get_pods_from_service",
+              "args": {
+                "service_name": "compose-post-service"
+              },
+              "id": "call_N0mCBu829N5lOLwHMCUu2PjI",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "{\n  \"service_name\": \"compose-post-service\",\n  \"namespace\": \"test-social-network\",\n  \"pods\": [\n    {\n      \"pod_name\": \"compose-post-service-64f6c9b656-tlp4g\",\n      \"pod_status\": \"Running\"\n    }\n  ]\n}"
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 2: The pod logs for compose-post-service-64f6c9b656-tlp4g will contain Thrift RPC timeout/retry errors or repeated downstream call entries indicating retries/duplicate requests. I'll fetch recent logs (tail 500) filtering for important messages.",
+          "tool_calls": [
+            {
+              "name": "get_logs",
+              "args": {
+                "resource_name": "compose-post-service-64f6c9b656-tlp4g",
+                "resource_type": "pod",
+                "tail": 500,
+                "important": true
+              },
+              "id": "call_rXt0CVb5nvuWMKyZaNWJtpHM",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Found 234 important log entries:\n\nThrift: Fri Oct 16 20:20:26 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:26.506577] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:26 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:26.548827] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:26 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:26.593104] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:26 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:26.612175] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:26 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:26.651607] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:26 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:26.870524] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:26 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:26.923356] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:26 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:26.935897] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:27 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:27.054275] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:27 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:27.179204] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:27 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:27.202847] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:27 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:27.271030] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:27 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:27.404166] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:27 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:27.405143] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:27 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:27.412461] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:27 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:27.420625] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:27 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:27.489161] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:27 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:27.504946] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:27 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:27.604183] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:27 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:27.880190] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:28 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:28.162774] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:28 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:28.428360] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:28 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:28.470188] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:28 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:28.559969] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:28 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:28.743513] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:28 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:28.841987] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:29 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:29.150844] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:29 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:29.155179] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:29 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:29.285819] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:29 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:29.420255] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:29 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:29.453427] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:29 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:29.455930] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:29 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:29.551634] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:29 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:29.642393] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:29 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:29.700454] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:29 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:29.770593] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:29 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:29.774678] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:29 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:29.839639] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:29 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:29.891250] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:30 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:30.019802] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:30 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:30.020270] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:30 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:30.072352] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:30 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:30.095218] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:30 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:30.206498] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:30 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:30.348436] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:30 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:30.390592] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:30 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:30.406657] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:30 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:30.413181] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:30 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:30.423453] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:30 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:30.552987] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:30 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:30.940376] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:31 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:31.044878] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:31 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:31.126040] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:31 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:31.148976] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:31 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:31.270084] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:31 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:31.360478] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:31 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:31.819594] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:31 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:31.976157] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:32 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:32.143000] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:32 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:32.430313] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:32 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:32.434281] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:32 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:32.454553] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:32 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:32.487372] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:32 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:32.528073] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:32 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:32.651328] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:32 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:32.753458] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:32 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:32.807822] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:32 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:32.847454] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:32 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:32.928791] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:32 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:32.938508] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:33 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:33.055490] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:33 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:33.219724] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:33 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:33.232249] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:33 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:33.246733] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:33 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:33.313865] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:33 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:33.565909] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:33 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:33.586612] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:33 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:33.625307] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:33 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:33.677552] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:33 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:33.751647] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:33 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:33.834051] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:33 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:33.997293] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.023449] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.060212] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.110387] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.282713] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.303624] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.405547] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.480708] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.488374] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.513322] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.596302] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.597899] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.626296] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.641408] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.762923] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.804121] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.827699] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.843455] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.879968] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.990922] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:34 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:34.999759] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:35 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:35.016153] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:35 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:35.186724] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:35 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:35.211259] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:35 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:35.300384] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:35 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:35.400964] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:35 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:35.469511] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:35 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:35.495875] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:35 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:35.543942] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:35 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:35.722060] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:35 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:35.780134] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:35 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:35.883476] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:36 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:36.078535] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:36 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:36.217537] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:36 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:36.334911] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client\nThrift: Fri Oct 16 20:20:36 2026 TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused\n[2026-Oct-16 20:20:36.336392] <error>: (ClientPool.h:114:Pop) Failed to connect post-storage-client"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "compose-post-service (pod compose-post-service-64f6c9b656-tlp4g) is repeatedly failing Thrift connections to post-storage-service:9090 (Connection refused), causing rapid repeated downstream retry attempts that are producing elevated end-to-end latency and errors observed by nginx-thrift.",
+                "reasoning": "1) Pod list: compose-post-service has a single pod (compose-post-service-64f6c9b656-tlp4g) and is Running \u2014 no CrashLoopBackOff or pod restarts, so pod health isn't the root cause.\n2) Pod logs (important entries, Oct 16 20:20:26\u201320:20:36) show numerous repeated lines: 'TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused' and '(ClientPool.h:114:Pop) Failed to connect post-storage-client'. The frequency and repetition indicate the service is retrying connection attempts rapidly when the downstream post-storage-service is unreachable. These repeated downstream failures/retries explain elevated latency and propagated errors upstream to nginx-thrift."
+              },
+              "id": "call_AAFsvdR8t0M7tOHrsb4WWqOG",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    },
+    {
+      "diagnosis": "Port mismatch between nginx-thrift and compose-post-service: nginx-thrift is using/advertising port 8080 (endpoint 10.244.1.21:8080) while compose-post-service is exposed on port 9090 (endpoint 10.244.1.13:9090). This mismatch would cause nginx-thrift\u2019s upstream/Thrift calls to the compose-post endpoint to fail (or surface generic errors) if nginx is configured to target the wrong port.",
+      "reasoning": "kubectl describe service/nginx-thrift (namespace test-social-network) shows Port 8080 with Endpoints 10.244.1.21:8080. kubectl describe service/compose-post-service (namespace test-social-network) shows Port 9090 with Endpoints 10.244.1.13:9090. The differing ports indicate the nginx-thrift upstream mapping (URL/port) likely does not match the compose-post-service target port, causing RPC/connectivity failures.",
+      "task": {
+        "priority": 2,
+        "status": "completed",
+        "investigation_goal": "Domain: dependency/config. Hypothesis: nginx-thrift -> compose-post-service mapping (URL/port/name) or timeout/Thrift-client config is incorrect, causing nginx-thrift to surface generic errors. Perform two-sided check: inspect nginx-thrift upstream/Thrift-ingress config for compose-post endpoint and inspect compose-post-service Kubernetes Service (selector/port) for a matching target.",
+        "target_resource": "nginx-thrift <-> compose-post-service (connection)",
+        "resource_type": "service",
+        "suggested_tools": [
+          "kubectl_describe service/nginx-thrift --namespace=test-social-network",
+          "kubectl_describe service/compose-post-service --namespace=test-social-network"
+        ]
+      },
+      "insights": [
+        "Port mismatch between services: nginx-thrift advertises/exposes Port 8080 with Endpoint 10.244.1.21:8080, while compose-post-service is exposed on Port 9090 with Endpoint 10.244.1.13:9090.",
+        "Both Services have active endpoints (each lists an endpoint IP:port), so the problem is not due to missing endpoints or absent backends.",
+        "The Services point to different backend pods (different endpoint IPs), confirming they are distinct backends rather than the same pod on different ports.",
+        "No Kubernetes Events were recorded on either Service (Events: <none>), so there were no immediate K8s-level errors logged against the Service objects themselves.",
+        "Root cause conclusion: nginx-thrift's upstream/Thrift configuration is targeting the wrong port (8080) for the compose-post backend (which listens on 9090). This port mismatch would cause RPC/connectivity failures; remediation is to align service/targetPort or update nginx upstream to the correct port."
+      ],
+      "steps_performed": [
+        "Analyzed hypothesis that nginx-thrift Service port/annotations/selectors/endpoints could reveal upstream mapping or misconfiguration affecting the compose-post endpoint",
+        "Checked Service/nginx-thrift in namespace test-social-network using kubectl_describe",
+        "Analyzed nginx-thrift Service fields (Port, TargetPort, Endpoints, Selector, Annotations) from kubectl_describe output",
+        "Analyzed hypothesis that compose-post-service may expose a different port/targetPort or have no endpoints, causing nginx-thrift upstream failures",
+        "Checked Service/compose-post-service in namespace test-social-network using kubectl_describe",
+        "Analyzed compose-post-service fields (Port, TargetPort, Endpoints, Selector, Annotations) from kubectl_describe output",
+        "Correlated data from kubectl_describe (nginx-thrift) and kubectl_describe (compose-post-service) to compare ports, targetPorts, and endpoints",
+        "Submitted final diagnosis using submit_final_diagnosis"
+      ],
+      "tools_stats": {
+        "kubectl_describe": 2,
+        "submit_final_diagnosis": 1
+      },
+      "message_history": [
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 1: The nginx-thrift Kubernetes Service\u2019s port/annotations/selectors or endpoints reveal the upstream mapping or ingress configuration for the compose-post endpoint (e.g., port name, port number, targetPort, annotations for Thrift), which could show a mismatch or misconfiguration. I will describe the nginx-thrift Service in namespace test-social-network to verify these fields.",
+          "tool_calls": [
+            {
+              "name": "kubectl_describe",
+              "args": {
+                "resourceType": "service",
+                "name": "nginx-thrift",
+                "namespace": "test-social-network"
+              },
+              "id": "call_pOoefGTL09ChL45RD9kmPUXn",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Name:                     nginx-thrift\nNamespace:                test-social-network\nLabels:                   app.kubernetes.io/managed-by=Helm\nAnnotations:              meta.helm.sh/release-name: social-network\n                          meta.helm.sh/release-namespace: test-social-network\nSelector:                 service=nginx-thrift\nType:                     ClusterIP\nIP Family Policy:         SingleStack\nIP Families:              IPv4\nIP:                       10.96.215.193\nIPs:                      10.96.215.193\nPort:                     8080  8080/TCP\nTargetPort:               8080/TCP\nEndpoints:                10.244.1.21:8080\nSession Affinity:         None\nInternal Traffic Policy:  Cluster\nEvents:                   <none>\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "Hypothesis 2: The compose-post-service Service may not expose a matching port/targetPort or may have no endpoints (or different labels/selectors), causing nginx-thrift's upstream to fail; I'll describe compose-post-service in test-social-network to verify ports, targetPorts, selectors, and endpoints.",
+          "tool_calls": [
+            {
+              "name": "kubectl_describe",
+              "args": {
+                "resourceType": "service",
+                "name": "compose-post-service",
+                "namespace": "test-social-network"
+              },
+              "id": "call_UwMkHd2JMY2ZrokmV57de9iG",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Name:                     compose-post-service\nNamespace:                test-social-network\nLabels:                   app.kubernetes.io/managed-by=Helm\nAnnotations:              meta.helm.sh/release-name: social-network\n                          meta.helm.sh/release-namespace: test-social-network\nSelector:                 service=compose-post-service\nType:                     ClusterIP\nIP Family Policy:         SingleStack\nIP Families:              IPv4\nIP:                       10.96.51.45\nIPs:                      10.96.51.45\nPort:                     9090  9090/TCP\nTargetPort:               9090/TCP\nEndpoints:                10.244.1.13:9090\nSession Affinity:         None\nInternal Traffic Policy:  Cluster\nEvents:                   <none>\n"
+        },
+        {
+          "type": "AIMessage",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "submit_final_diagnosis",
+              "args": {
+                "diagnosis": "Port mismatch between nginx-thrift and compose-post-service: nginx-thrift is using/advertising port 8080 (endpoint 10.244.1.21:8080) while compose-post-service is exposed on port 9090 (endpoint 10.244.1.13:9090). This mismatch would cause nginx-thrift\u2019s upstream/Thrift calls to the compose-post endpoint to fail (or surface generic errors) if nginx is configured to target the wrong port.",
+                "reasoning": "kubectl describe service/nginx-thrift (namespace test-social-network) shows Port 8080 with Endpoints 10.244.1.21:8080. kubectl describe service/compose-post-service (namespace test-social-network) shows Port 9090 with Endpoints 10.244.1.13:9090. The differing ports indicate the nginx-thrift upstream mapping (URL/port) likely does not match the compose-post-service target port, causing RPC/connectivity failures."
+              },
+              "id": "call_a6n4gwsAewJoWeIwKg7TjluX",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "type": "ToolMessage",
+          "content": "Final diagnosis submitted successfully. Investigation complete."
+        }
+      ]
+    }
+  ],
+  "tasks_to_be_executed": [],
+  "final_report": {
+    "root_cause": "The post-storage-service was refusing Thrift connections on port 9090 during the incident window (Connection refused), causing the single compose-post-service pod (compose-post-service-64f6c9b656-tlp4g) to issue rapid retry attempts. Those retries amplified end-to-end latency and caused errors to propagate upstream to nginx-thrift and clients. In short: post-storage-service unavailability on 9090 \u2192 compose-post-service retry storm \u2192 elevated latency/errors observed at nginx-thrift.",
+    "affected_resources": [
+      "post-storage-service (Thrift on port 9090)",
+      "compose-post-service (pod: compose-post-service-64f6c9b656-tlp4g)",
+      "nginx-thrift (ingress/gateway)",
+      "text-service",
+      "user-mention-service",
+      "url-shorten-service",
+      "unique-id-service",
+      "media-service"
+    ],
+    "evidence_summary": "1) compose-post-service pod logs (compose-post-service-64f6c9b656-tlp4g, Oct 16 20:20:26\u201320:20:36) contain repeated errors: 'TSocket::open() connect() <Host: post-storage-service Port: 9090>: Connection refused' and '(ClientPool.h:114:Pop) Failed to connect post-storage-client'. 2) Traces (traceIDs 0000d6219f76fd64, 021cdeebd509d9d0) show nginx-thrift \u2192 compose-post-service \u2192 multiple downstream services and are flagged has_error=true with elevated latency (~6.1\u20136.4ms). 3) These logs and traces correlate in time and call flow: compose-post attempted downstream RPCs to post-storage which failed and led to retries/latency that propagated upstream. 4) A separate configuration check (kubectl describe) revealed a port discrepancy between nginx-thrift (endpoint shown on :8080) and compose-post-service (endpoint shown on :9090); this is a configuration issue that should be validated, but trace/log evidence shows compose-post did receive requests and its logs identify post-storage connection refusals as the immediate failure.",
+    "investigation_summary": "Priority 1 investigation (completed): inspected compose-post-service pod status (single pod running) and pod logs. Pod health was RUNNING (no CrashLoopBackOff), but logs showed high-frequency connection refused errors to post-storage-service:9090, confirming downstream unavailability and aggressive retry behavior by compose-post. Priority 2 investigation (completed): compared kubectl describe outputs for nginx-thrift and compose-post-service and observed a port mismatch (nginx-thrift endpoint/port 8080 vs compose-post-service endpoint/port 9090), indicating a secondary configuration issue that should be remediated. Correlation across traces, pod logs, and service descriptions supports the causal chain: post-storage-service refused connections \u2192 compose-post retried rapidly \u2192 end-to-end latency and errors surfaced in traces at nginx-thrift and other downstream callers. No additional tasks are required to identify the immediate root cause; remediation should prioritize restoring/service-restarting post-storage-service and tuning compose-post retry policy, and then validate/fix the nginx-thrift \u2194 compose-post port mapping.",
+    "detection": true,
+    "localization": [
+      "post-storage-service"
+    ]
+  },
+  "prompts_config": {
+    "triage_agent": "You are an expert Site Reliability Engineer. Your mission is to triage a Kubernetes application by analyzing the provided data.\n\nYour analysis must adhere to the following rules:\n1.  **Focus**: Identify symptoms at the **pod or service level only**. Do not provide cluster-wide analysis or generalizations.\n2.  **Aggregation**: For each pod or service that has issues, create **at most one symptom entry**. Aggregate all related evidence (from pods, metrics, traces) into that single entry.\n3.  **Action**: Synthesize the information to identify and list potential symptoms. For each symptom, pinpoint the affected resource (pod or service) and cite the specific evidence.\n4.  **Resource Naming**: In the `affected_resource` field, provide ONLY the exact resource name without any decorators, prefixes, or namespace qualifiers (e.g., use \"geo-6b4b89b5f5-rsrh7\" NOT \"test-hotel-reservation/geo-6b4b89b5f5-rsrh7\").\n5.  **Trace-Only Evidence**: If error traces are the only signals, still produce symptoms by identifying the service (or pod) that owns the failing span and summarizing the suspected issue using the trace error message. Avoid generic \"trace failed\" statements\u2014make the hypothesis explicit (e.g., \"checkout-service may have invalid credentials because trace X shows `401 Unauthorized` calling payment-service\").\n6.  **Empty State**: If the provided data contains no issues, it is correct to return an empty list of symptoms.",
+    "rca_agent": "\nYou are an expert DevOps engineer performing focused Root Cause Analysis on a Kubernetes service.\n\nInstructions:\n1. Use ONLY the Priority Tools provided in the task. Do not propose or use tools outside this list.\n2. For each tool call, first formulate a clear, testable hypothesis about a possible root cause that can be answered by the result. Avoid broad or exploratory queries.\n3. Each tool call must provide unique, non-overlapping information. Never repeat requests with similar parameters or investigate the same aspect repeatedly in slightly different ways.\n4. Stop investigating, even if you have not reached the budget limit, when you have:\n   - Clear evidence that directly identifies a root cause (or definitively rules one out)\n   - Multiple data points indicating the same failure/cause\n   - Sufficient information to answer the investigation goal\n5. DO NOT:\n   - Repeat or re-run tools unless you are testing a truly new and justified hypothesis\n   - Query outside the given Target or Priority Tools\n   - Investigate unrelated resources or expand scope\n6. When you have gathered sufficient, non-redundant evidence (typically after 2-3 targeted tool calls), call submit_final_diagnosis with:\n   - diagnosis: State the precise root cause as it pertains to the investigation goal\n   - reasoning: Support your diagnosis by referencing unique findings from your tool calls\n\nREMEMBER: Quality over quantity. Focus on unique and conclusive findings rather than exhaustive or repetitive investigation.\n",
+    "supervisor_agent": "You are an expert Site Reliability Engineer analyzing RCA findings to determine the root cause of an incident.\n\nAnalyze all symptoms and investigation findings to:\n1. Identify patterns and correlations across findings\n2. Determine the primary root cause\n3. List all affected resources\n4. Summarize key evidence\n\n**Understanding Task Priority:**\nEach RCA investigation task has been assigned a priority level:\n- Priority 1 = Most important / Most likely to reveal root cause (investigated first)\n- Priority 2, 3, ... = Progressively lower importance\n- Tasks with lower priority numbers should generally have higher weight in your analysis\n- The priority reflects the likelihood that investigating that task/resource would uncover the root cause\n\nUse the priority information to contextualize findings: results from priority 1 tasks are typically more significant for determining root cause than lower priority investigations.\n\n**Detection & Localization Requirements:**\n- **detection**: Set to `true` if any problem/anomaly was detected in the cluster based on the evidence. Set to `false` only if no issues are found.\n- **localization**: Provide a list of ONLY the faulty/problematic components (service names or pod names) directly identified as the root cause. This should be a minimal, precise list - extract ONLY the specific resource(s) that caused the incident, not all affected resources.\n  - Example: If a service \"user-service\" has a misconfiguration causing downstream failures, localization = [\"user-service\"]\n  - Example: If a pod \"database-pod-xyz\" is failing, localization = [\"database-pod-xyz\"]\n  - Leave empty/null if the root cause cannot be localized to a specific service or pod.\n\n**Root Cause Expectations:**\n- Build a causal chain that connects symptoms, investigation evidence, and the precise failure mechanism\n- Cite concrete configuration or runtime details (e.g., \"service expects port 5432 but database listens on 5433\") when diagnosing misconfigurations or integration issues\n- If evidence stops at the symptom level, identify the missing proof and pursue it before finalizing\n\n**Strict Iteration Policy:**\nOnly request another RCA iteration when the existing evidence is insufficient to produce a confident final diagnosis. Never re-run or re-request tasks already marked as completed or currently in progress. When additional work is unavoidable, list only the minimal set of pending task priorities in `tasks_to_be_executed` and clearly justify why each is required. If the current findings support a solid root cause, leave `tasks_to_be_executed` empty and finalize the report.\n\nWhen you need more evidence, ask for the most targeted pending tasks that can close the causal gap (for example, verifying port mappings, credentials, or configuration values at both ends of a failing connection).\n\nProvide a clear, specific root cause statement that explains what caused the incident and why it happened now."
+  },
+  "experiment_name": "N - Planner No Grounding P2 B7 - Social Network - Port misconfig post-storage (261016_Ablation_No_Grounding)",
+  "agent_id": "N",
+  "agent_configuration_name": "N - Planner No Grounding P2 B7",
+  "stats": {
+    "run_id": "01a14661-647e-7262-aafd-8fe887e3b82c",
+    "experiment_name": "N - Planner No Grounding P2 B7 - Social Network - Port misconfig post-storage (261016_Ablation_No_Grounding)",
+    "status": "success",
+    "execution_time_seconds": 165.896211,
+    "total_tokens": 56605,
+    "total_cost": 0.032018,
+    "langsmith_url": "https://smith.langchain.com/o/c6e347a7-d8e4-4610-b18c-5a37e9448bb6/projects/p/9d66e647-0a32-4360-8198-97ce7fda45ac/r/01a14661-647e-7262-aafd-8fe887e3b82c?trace_id=01a14661-647e-7262-aafd-8fe887e3b82c&start_time=2026-10-16T20:22:30.270224",
+    "agent_stats": {
+      "supervisor_agent": {
+        "total_tokens": 7030,
+        "input_tokens": 4955,
+        "output_tokens": 2075,
+        "cost": 0.00415,
+        "runs_count": 1,
+        "execution_time_seconds": 20.880881,
+        "models": [
+          "gpt-5-mini"
+        ]
+      },
+      "rca_agent": {
+        "total_tokens": 41132,
+        "input_tokens": 33214,
+        "output_tokens": 7918,
+        "cost": 0.015836,
+        "runs_count": 2,
+        "execution_time_seconds": 148.53004099999998,
+        "models": [
+          "gpt-5-mini"
+        ]
+      },
+      "schedule_rca_tasks": {
+        "total_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost": 0.0,
+        "runs_count": 1,
+        "execution_time_seconds": 0.002379,
+        "models": []
+      },
+      "planner_agent": {
+        "total_tokens": 5351,
+        "input_tokens": 1511,
+        "output_tokens": 3840,
+        "cost": 0.00768,
+        "runs_count": 1,
+        "execution_time_seconds": 34.528131,
+        "models": [
+          "gpt-5-mini"
+        ]
+      },
+      "triage_agent": {
+        "total_tokens": 3092,
+        "input_tokens": 916,
+        "output_tokens": 2176,
+        "cost": 0.004352,
+        "runs_count": 1,
+        "execution_time_seconds": 20.377198,
+        "models": [
+          "gpt-5-mini"
+        ]
+      }
+    }
+  },
+  "testbed": {
+    "application_name": [
+      "Social Network"
+    ],
+    "fault_name": "Port misconfig post-storage",
+    "target_namespace": "test-social-network",
+    "trace_service_starting_point": "nginx-thrift",
+    "rca_tasks_per_iteration": "2",
+    "max_tool_calls": "7"
+  },
+  "jaeger_start_us": null,
+  "evaluation": {
+    "detection": true,
+    "localization": true,
+    "localization_any": true,
+    "localization_legacy": true,
+    "blamed_harness": false,
+    "rca_score": 2,
+    "rca_motivation": "The analysis correctly focuses on post-storage-service and its unavailability as the source of upstream errors, but it attributes the issue to Thrift connection refusals on port 9090 rather than recognizing the misconfigured Kubernetes Service targetPort (9090 \u2192 9999) causing traffic to hit a non-listening port. Component is right, mechanism is wrong, so this fits a weak (2) score."
+  }
+}
