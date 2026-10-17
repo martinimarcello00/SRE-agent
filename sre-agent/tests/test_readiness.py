@@ -35,7 +35,8 @@ class Core:  # CoreV1Api-like fake of a healthy astronomy-shop with adFailure in
 scenario = {"scenario": "Astronomy Shop", "target_namespace": "astronomy-shop", "service_starting_point": "frontend-proxy",
             "target": "ad", "_injection": {"mechanism": "flagd", "flag": "adFailure"}}
 fresh = [{"spans": [{"startTime": int(time.time() * 1e6)}]}]
-args = dict(traces=lambda svc: fresh, prom_up=lambda: True)
+healthy = {"frontend-proxy": [True], "ad": [True], "shipping": [True]}
+args = dict(traces=lambda svc: fresh, prom_up=lambda: True, endpoints=lambda ns: healthy)
 
 
 def failed(s=scenario, core=None, **kw):
@@ -63,6 +64,13 @@ assert list(failed(traces=lambda svc: [])) == ["C6"]
 assert list(failed(traces=lambda svc: [{"spans": [{"startTime": int((time.time() - 900) * 1e6)}]}])) == ["C6"]  # stale
 assert failed(s={**scenario, "scenario": "Hotel Reservation"}, traces=lambda svc: []) == {}  # C6 only with continuous load
 assert list(failed(prom_up=lambda: False)) == ["C7"]
+
+# 2026-10-17: shipping Ready at 13:15:17, its ClusterIP refused until 13:16:25 (endpoint not ready yet)
+assert failed(endpoints=lambda ns: {**healthy, "shipping": [False]}) == {"C8": "services without ready endpoints: ['shipping']"}
+assert list(failed(endpoints=lambda ns: {**healthy, "shipping": []})) == ["C8"]  # no endpoint at all
+assert list(failed(endpoints=lambda ns: {**healthy, "flagd": [True, False]})) == ["C8"]  # injection: old flagd still terminating
+assert failed(endpoints=lambda ns: {**healthy, "ad": [False]}) == {}  # target may be broken (adManualGc crashes it)
+assert failed(s={**scenario, "scenario": "Hotel Reservation"}, endpoints=lambda ns: {"user": []}) == {}  # Astronomy only
 
 
 def boom():

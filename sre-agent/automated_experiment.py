@@ -62,7 +62,19 @@ def run_readiness_gate(scenario: dict) -> dict:
     jaeger = JaegerAPI(jaeger_url=os.environ.get("JAEGER_URL"))
     prom_url = os.environ.get("PROMETHEUS_SERVER_URL", "http://localhost:32000")
     prom_up = lambda: bool(requests.get(f"{prom_url}/api/v1/query", params={"query": "up"}, timeout=5).json()["data"]["result"])
-    return wait_until_ready(scenario, jaeger.k8s_client, lambda svc: jaeger.get_jaeger_traces(svc, limit=20, lookback="5m"), prom_up)
+    from kubernetes import client
+    core = jaeger.k8s_client
+    discovery = client.DiscoveryV1Api(core.api_client)
+
+    def endpoints(namespace):
+        ready = {svc.metadata.name: [] for svc in core.list_namespaced_service(namespace).items if svc.spec.selector}
+        for eps in discovery.list_namespaced_endpoint_slice(namespace).items:
+            svc = (eps.metadata.labels or {}).get("kubernetes.io/service-name")
+            if svc in ready:
+                ready[svc] += [bool(e.conditions and e.conditions.ready) for e in eps.endpoints or []]
+        return ready
+
+    return wait_until_ready(scenario, core, lambda svc: jaeger.get_jaeger_traces(svc, limit=20, lookback="5m"), prom_up, endpoints)
 
 
 def get_experiment_dir_path(dir_name: str, experiment_path: Optional[str] = None):

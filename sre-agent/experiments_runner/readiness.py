@@ -1,7 +1,7 @@
 """Environment gate: checks the cluster after setup and the Jaeger port-forward, before any agent runs.
 
-Clients are injected (core: kubernetes CoreV1Api-like, traces: service -> list|None, prom_up: () -> bool),
-so nothing here needs a cluster. Each check returns an error string, or None when it passes.
+Clients are injected (core: kubernetes CoreV1Api-like, traces: service -> list|None, prom_up: () -> bool,
+endpoints: namespace -> {selector Service: [ready flag of each endpoint in its EndpointSlices]}), so nothing here needs a cluster. Each check returns an error string, or None when it passes.
 """
 import json
 import logging
@@ -31,10 +31,13 @@ def _c2(s, core, **_):  # at least one pod
     return None if core.list_namespaced_pod(s["target_namespace"]).items else f"no pods in {s['target_namespace']}"
 
 
-def _c3(s, core, **_):  # pods Ready/Succeeded; the target's own pods may be broken by a legitimate fault
-    skip = {_key(t) for t in s.get("accepted_targets") or [s.get("target")] if t}
+def _targets(s):  # the target's own pods and Service may be broken by a legitimate fault
+    return {_key(t) for t in s.get("accepted_targets") or [s.get("target")] if t}
+
+
+def _c3(s, core, **_):  # pods Ready/Succeeded
     bad = [p.metadata.name for p in core.list_namespaced_pod(s["target_namespace"]).items
-           if not _ready(p) and _key(p.metadata.name) not in skip]
+           if not _ready(p) and _key(p.metadata.name) not in _targets(s)]
     return f"pods not ready: {bad}" if bad else None
 
 
@@ -65,15 +68,23 @@ def _c7(s, prom_up, **_):  # Prometheus (NodePort 32000) answers
     return None if prom_up() else "Prometheus does not answer"
 
 
-CHECKS = {"C1": _c1, "C2": _c2, "C3": _c3, "C4": _c4, "C5": _c5, "C6": _c6, "C7": _c7}
+def _c8(s, endpoints, **_):  # Astronomy Shop: Services route to ready endpoints only (shipping, flagd restarted by the injection)
+    if s.get("scenario") != "Astronomy Shop":  # a Ready pod reaches its EndpointSlice 28-70 s later; until then ECONNREFUSED
+        return None
+    bad = [svc for svc, ready in endpoints(s["target_namespace"]).items()
+           if not (ready and all(ready)) and _key(svc) not in _targets(s)]
+    return f"services without ready endpoints: {bad}" if bad else None
 
 
-def check_environment(scenario, core, traces, prom_up, now=time.time):
+CHECKS = {"C1": _c1, "C2": _c2, "C3": _c3, "C4": _c4, "C5": _c5, "C6": _c6, "C7": _c7, "C8": _c8}
+
+
+def check_environment(scenario, core, traces, prom_up, endpoints, now=time.time):
     """Failed checks as {id: reason}; empty when the environment is healthy."""
     failed = {}
     for cid, check in CHECKS.items():
         try:
-            err = check(scenario, core=core, traces=traces, prom_up=prom_up, now=now)
+            err = check(scenario, core=core, traces=traces, prom_up=prom_up, endpoints=endpoints, now=now)
         except Exception as e:  # an unreachable API is a failed check, not a crash
             err = f"{type(e).__name__}: {' '.join(str(e).splitlines()[:2])}"[:120]
         if err:
@@ -81,14 +92,14 @@ def check_environment(scenario, core, traces, prom_up, now=time.time):
     return failed
 
 
-def wait_until_ready(scenario, core, traces, prom_up, interval=15, sleep=time.sleep, clock=time.monotonic, now=time.time):
+def wait_until_ready(scenario, core, traces, prom_up, endpoints, interval=15, sleep=time.sleep, clock=time.monotonic, now=time.time):
     """Poll every `interval` s up to scenario['readiness_timeout'] (default 300 s); return the last failed checks."""
     if os.environ.get("SKIP_READINESS_GATE") == "1":
         logger.warning("SKIP_READINESS_GATE=1: readiness gate bypassed")
         return {}
     deadline = clock() + int(scenario.get("readiness_timeout", 300))
     while True:
-        failed = check_environment(scenario, core, traces, prom_up, now)
+        failed = check_environment(scenario, core, traces, prom_up, endpoints, now)
         if not failed or clock() >= deadline:
             return failed
         logger.info("Environment not ready yet, retrying in %ds: %s", interval, failed)
