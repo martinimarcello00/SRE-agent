@@ -21,8 +21,8 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-from utils import TelegramNotification, get_today_model_usage
-from config import apply_config_overrides, MAX_DAILY_OPENAI_TOKEN_LIMIT, AIOPSLAB_DIR, TRACE_SERVICE_STARTING_POINT, MCP_CONFIG, get_mcp_config, use_fallback_openai_key
+from utils import TelegramNotification
+from config import apply_config_overrides, AIOPSLAB_DIR, TRACE_SERVICE_STARTING_POINT, MCP_CONFIG, get_mcp_config, select_openai_key
 from api.config_manager import ConfigManager  # MCP-server is on sys.path via config
 from evaluation import evaluate_experiment
 
@@ -35,24 +35,6 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("mcp.client.streamable_http").setLevel(logging.WARNING)
 
 logger = logging.getLogger("automated_experiment")
-
-
-def has_token_budget() -> bool:
-    """Return True if the active OpenAI key is under the daily limit, switching to the fallback key if needed."""
-    usage = get_today_model_usage(model_name="gpt-5-mini")
-    logger.info(
-        "Current token usage (gpt-5-mini): input=%d, output=%d, total=%d",
-        usage["input_tokens"],
-        usage["output_tokens"],
-        usage["total_tokens"],
-    )
-    if usage["total_tokens"] < MAX_DAILY_OPENAI_TOKEN_LIMIT:
-        return True
-    logger.warning("Token usage exceeded limit %d on the active OpenAI key.", MAX_DAILY_OPENAI_TOKEN_LIMIT)
-    if not use_fallback_openai_key():
-        return False
-    logger.warning("Switched to OPENAI_API_KEY_FALLBACK / OPENAI_ADMIN_API_KEY_FALLBACK.")
-    return has_token_budget()
 
 
 def run_readiness_gate(scenario: dict) -> dict:
@@ -296,8 +278,8 @@ def main():
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Failed to send Telegram start message: %s", exc)
 
-        if not has_token_budget():
-            logger.error(f"Token usage exceeded limit {MAX_DAILY_OPENAI_TOKEN_LIMIT} and no fallback key available. Aborting experiment.")
+        if not select_openai_key():
+            logger.error("No OpenAI key pair is under its daily token limit. Aborting experiment.")
             if enable_notifications and telegram_notifier:
                 try:
                     telegram_notifier.send_telegram_message(
@@ -434,8 +416,8 @@ def main():
 
                     apply_config_overrides(agent_conf)
 
-                    if not has_token_budget():
-                        logger.error(f"Token usage exceeded limit ({MAX_DAILY_OPENAI_TOKEN_LIMIT}) and no fallback key available. Aborting experiment.")
+                    if not select_openai_key():
+                        logger.error("No OpenAI key pair is under its daily token limit. Aborting experiment.")
                         if enable_notifications and telegram_notifier:
                             try:
                                 telegram_notifier.send_telegram_message(

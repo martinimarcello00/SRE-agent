@@ -9,6 +9,8 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 from typing import Any, Mapping
 
+from utils.openai_usage import get_today_model_usage
+
 # Get the path to the root directory of the repository
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 
@@ -24,21 +26,21 @@ logger = logging.getLogger(__name__)
 
 
 class ChatOpenAIWithFallback(ChatOpenAI):
-    """ChatOpenAI that switches to the fallback key and retries once when the quota is exhausted mid-run."""
+    """ChatOpenAI that switches to another key and retries once when the quota is exhausted mid-run."""
 
     # note: only the sync path (_generate) is covered, all agents use .invoke(); override _agenerate if they move to .ainvoke()
     def _generate(self, *args: Any, **kwargs: Any):
-        key_used = self.openai_api_key
+        key_used, index_used = self.openai_api_key, _active_key_index
         try:
             return super()._generate(*args, **kwargs)
         except openai.RateLimitError as exc:
             if exc.code != "insufficient_quota":
                 raise
-            use_fallback_openai_key()
+            select_openai_key(index_used)
             # Another parallel worker may have already switched: retry if the key changed
             if self.openai_api_key == key_used:
                 raise
-            logger.warning("OpenAI quota exhausted mid-run: retrying %s with the fallback key.", self.model_name)
+            logger.warning("OpenAI quota exhausted mid-run: retrying %s with another key.", self.model_name)
             return super()._generate(*args, **kwargs)
 
 
@@ -47,19 +49,35 @@ GPT5_MINI = ChatOpenAIWithFallback(model="gpt-5-mini")
 
 GPT5_1 = ChatOpenAIWithFallback(model="gpt-5.1")
 
-_fallback_lock = threading.Lock()
+_key_lock = threading.Lock()
+_exhausted_keys: set[int] = set()  # pairs that got insufficient_quota: out of credit, which does not reset at 00:00 UTC
 
 
-def use_fallback_openai_key() -> bool:
-    """Switch LLM calls to OPENAI_API_KEY_FALLBACK and usage tracking to OPENAI_ADMIN_API_KEY_FALLBACK.
+def select_openai_key(exhausted_index: int | None = None) -> bool:
+    """Activate the first key pair of OPENAI_KEY_CHAIN, in priority order, under its daily gpt-5-mini token limit.
 
-    Returns False if the fallback keys are not configured or already in use.
+    The usage is read with each pair's admin key (both keys required) and restarts at 00:00 UTC, so a pair over its
+    limit becomes usable again the next day.
+    exhausted_index: the pair that got insufficient_quota mid-run, skipped for the rest of the execution (a parallel
+    worker hitting the same error just finds the next pair already active).
+    Returns False if no pair qualifies (the active one is left as it is).
     """
-    key = os.environ.get("OPENAI_API_KEY_FALLBACK")
-    admin_key = os.environ.get("OPENAI_ADMIN_API_KEY_FALLBACK")
-    with _fallback_lock:
-        if not key or not admin_key or os.environ.get("OPENAI_API_KEY") == key:
+    global _active_key_index
+    with _key_lock:
+        if exhausted_index is not None:
+            _exhausted_keys.add(exhausted_index)
+        for index, (name, key, admin_key, limit) in enumerate(OPENAI_KEY_CHAIN):
+            if not key or not admin_key or index in _exhausted_keys:
+                continue
+            used = get_today_model_usage(model_name="gpt-5-mini", admin_api_key=admin_key)["total_tokens"]
+            logger.info("OpenAI key pair %d/%d (%s): %d/%d gpt-5-mini tokens used today.",
+                        index + 1, len(OPENAI_KEY_CHAIN), name, used, limit)
+            if used < limit:
+                break
+        else:
             return False
+        if index == _active_key_index:
+            return True
 
         os.environ["OPENAI_API_KEY"] = key
         os.environ["OPENAI_ADMIN_API_KEY"] = admin_key
@@ -70,6 +88,8 @@ def use_fallback_openai_key() -> bool:
             llm.root_client, llm.root_async_client = fresh.root_client, fresh.root_async_client
             llm.client, llm.async_client = fresh.client, fresh.async_client
             llm.openai_api_key = fresh.openai_api_key
+        _active_key_index = index
+        logger.warning("Switched to OpenAI key pair %d/%d (%s).", index + 1, len(OPENAI_KEY_CHAIN), name)
         return True
 
 # Investigation Budget
@@ -84,8 +104,19 @@ RCA_TASKS_PER_ITERATION = int(os.environ.get("RCA_TASKS_PER_ITERATION", 3))
 # Trace service starting point for investigations
 TRACE_SERVICE_STARTING_POINT = os.environ.get("TRACE_SERVICE_STARTING_POINT", "frontend")
 
-# Daily OpenAI token limit
+# Daily OpenAI token limit (gpt-5-mini) of the primary and first fallback key, and of the second fallback key
 MAX_DAILY_OPENAI_TOKEN_LIMIT = int(os.environ.get("MAX_DAILY_OPENAI_TOKEN_LIMIT", 2_250_000))
+MAX_DAILY_OPENAI_TOKEN_LIMIT_FALLBACK_2 = int(os.environ.get("MAX_DAILY_OPENAI_TOKEN_LIMIT_FALLBACK_2", 3_000_000))
+
+# OpenAI key pairs in priority order: (name, LLM key, admin key for usage tracking, daily token limit).
+# Read once: switching overwrites OPENAI_API_KEY / OPENAI_ADMIN_API_KEY.
+OPENAI_KEY_CHAIN = [
+    (f"OPENAI_API_KEY{suffix}", os.environ.get(f"OPENAI_API_KEY{suffix}"), os.environ.get(f"OPENAI_ADMIN_API_KEY{suffix}"), limit)
+    for suffix, limit in (("", MAX_DAILY_OPENAI_TOKEN_LIMIT),
+                          ("_FALLBACK", MAX_DAILY_OPENAI_TOKEN_LIMIT),
+                          ("_FALLBACK_2", MAX_DAILY_OPENAI_TOKEN_LIMIT_FALLBACK_2))
+]
+_active_key_index = 0
 
 AIOPSLAB_DIR = os.environ.get("AIOPSLAB_DIR")
 

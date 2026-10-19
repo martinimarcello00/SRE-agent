@@ -15,6 +15,7 @@ def get_today_completions_usage(
     bucket_width: str = "1d",
     raw_output: Optional[bool] = False,
     by_model: bool = False,
+    admin_api_key: Optional[str] = None,
 ) -> Dict[str, int] | Dict[str, Dict[str, int]]:
     """Return today's organization usage for the completions endpoint.
 
@@ -22,12 +23,13 @@ def get_today_completions_usage(
         bucket_width: Width of the aggregation bucket passed to the API (e.g., "1d", "1h").
         raw_output: When True, return the raw JSON response from the API.
         by_model: When True, return usage grouped by model (dict keyed by model name).
+        admin_api_key: Admin key of the organization to query (default: OPENAI_ADMIN_API_KEY).
 
     Returns:
         - Default: Dict with ``input_tokens``, ``output_tokens`` and ``total_tokens``.
         - If ``by_model=True``: Dict[str, Dict[str, int]] mapping model -> token breakdown.
     """
-    api_key = os.getenv("OPENAI_ADMIN_API_KEY")
+    api_key = admin_api_key or os.getenv("OPENAI_ADMIN_API_KEY")
 
     if not api_key:
         logger.error("OPENAI_ADMIN_API_KEY environment variable is missing.")
@@ -116,7 +118,7 @@ def get_today_completions_usage(
     }
 
 
-def get_today_model_usage(model_name: str, bucket_width: str = "1d") -> Dict[str, int]:
+def get_today_model_usage(model_name: str, bucket_width: str = "1d", admin_api_key: Optional[str] = None) -> Dict[str, int]:
     """Return today's token usage for a specific model.
 
     Performs a per-model aggregation using ``get_today_completions_usage`` with
@@ -126,12 +128,13 @@ def get_today_model_usage(model_name: str, bucket_width: str = "1d") -> Dict[str
     Args:
         model_name: Exact model identifier to look up (e.g., "gpt-5-mini").
         bucket_width: Aggregation bucket width (default "1d").
+        admin_api_key: Admin key of the organization to query (default: OPENAI_ADMIN_API_KEY).
 
     Returns:
         Dict with keys ``input_tokens``, ``output_tokens``, ``total_tokens``.
     """
     try:
-        usage = get_today_completions_usage(bucket_width=bucket_width, by_model=True)
+        usage = get_today_completions_usage(bucket_width=bucket_width, by_model=True, admin_api_key=admin_api_key)
     except Exception as exc:
         logger.error("Failed to retrieve usage data: %s", exc)
         return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}

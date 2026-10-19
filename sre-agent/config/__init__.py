@@ -13,7 +13,7 @@ from .settings import (
     AIOPSLAB_DIR,
     apply_config_overrides,
     get_mcp_config,
-    use_fallback_openai_key
+    select_openai_key
 )
 
 __all__ = [
@@ -30,5 +30,5 @@ __all__ = [
     'apply_config_overrides',
     'AIOPSLAB_DIR',
     'get_mcp_config',
-    'use_fallback_openai_key'
+    'select_openai_key'
 ]
