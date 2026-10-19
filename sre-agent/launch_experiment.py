@@ -53,7 +53,8 @@ async def run_sre_agent(
         architecture: None or "multi_agent" runs the grounded multi-agent graph;
             "react_baseline" runs the single ReAct agent;
             "planner_no_grounding" runs the multi-agent graph without planner DataGraph injection;
-            "agentic_triage" runs the multi-agent graph with a ReAct agent instead of the heuristic triage checks.
+            "agentic_triage" runs the multi-agent graph with a ReAct agent instead of the heuristic triage checks;
+            "no_planner" runs the multi-agent graph with one RCA task per symptom instead of the planner LLM.
 
     Returns:
         Tuple of (result dictionary, execution time in seconds)
@@ -64,7 +65,7 @@ async def run_sre_agent(
 
     selected_architecture = "multi_agent" if architecture is None else architecture
     if selected_architecture not in {
-        "multi_agent", "react_baseline", "planner_no_grounding", "agentic_triage"
+        "multi_agent", "react_baseline", "planner_no_grounding", "agentic_triage", "no_planner"
     }:
         raise ValueError(f"Unsupported architecture: {selected_architecture!r}")
 

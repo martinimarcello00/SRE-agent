@@ -72,6 +72,7 @@ The experiment runner uses the `architecture` field in an agent configuration:
 | `"react_baseline"` | Single ReAct agent with all MCP tools. |
 | `"planner_no_grounding"` | Multi-agent workflow without DataGraph injection into the planner. |
 | `"agentic_triage"` | Multi-agent workflow with a ReAct triage agent instead of the heuristic triage checks. |
+| `"no_planner"` | Multi-agent workflow with one RCA task per symptom instead of the planner LLM. |
 
 For example, this is a fragment of an agent configuration:
 
@@ -117,6 +118,14 @@ If the agent stops without submitting, the symptom list is empty. The snapshot f
 (`submitted`, `tools_stats`, `message_history`). Use `prompts_config["agentic_triage"]` to
 override its prompt; `prompts_config["triage_agent"]` is ignored in this mode.
 
+The [No Planner B7 configuration](./experiments_runner/agent-configurations/no-planner-b7.json)
+(id `P`) is paired with the same F control. The planner makes no LLM call and no dependency
+lookup: a rule creates one RCA task per triage symptom (priority = triage order, goal built from
+the symptom type and evidence, no suggested tools), and every task starts in the first batch, so
+no symptom is held back by its position and `RCA_TASKS_PER_ITERATION` is not used. Triage, RCA
+workers and supervisor are unchanged; the supervisor still reads the priority, which here is only
+the triage order.
+
 Direct launcher usage:
 
 ```python
@@ -145,6 +154,7 @@ PYTHONPATH=. poetry run python tests/test_planner_no_grounding.py
 PYTHONPATH=. poetry run python tests/test_architecture_selection.py
 PYTHONPATH=. poetry run python tests/test_react_baseline.py
 PYTHONPATH=. poetry run python tests/test_agentic_triage.py
+PYTHONPATH=. poetry run python tests/test_no_planner.py
 ```
 
 ### Modifying a Specific Component

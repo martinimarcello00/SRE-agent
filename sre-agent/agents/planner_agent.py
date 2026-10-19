@@ -17,7 +17,7 @@ if mcp_server_path not in sys.path:
 from api.k8s_api import K8sAPI
 from api.datagraph import DataGraph
 
-from models import PlannerAgentState, RCATaskList, Symptom
+from models import PlannerAgentState, RCATask, RCATaskList, Symptom
 from prompts import PLANNER_SYSTEM_PROMPT, PLANNER_HUMAN_PROMPT, PLANNER_NO_GROUNDING_SYSTEM_PROMPT
 from config import GPT5_MINI
 from utils import get_system_prompt
@@ -83,6 +83,20 @@ def get_resource_dependencies(symptom: Symptom) -> dict:
     return result
 
 
+def symptom_tasks(symptoms: list[Symptom]) -> list[RCATask]:
+    """no_planner ablation: one RCA task per symptom, in triage order, built from the symptom alone."""
+    return [
+        RCATask(
+            priority=i,
+            investigation_goal=f"Identify the root cause of the symptom observed on {s.resource_type} '{s.affected_resource}': "
+                               f"{s.potential_symptom}. Triage evidence: {s.evidence}",
+            target_resource=s.affected_resource,
+            resource_type=s.resource_type,
+        )
+        for i, s in enumerate(symptoms, 1)
+    ]
+
+
 def planner_agent(state: PlannerAgentState) -> dict:
     """Create RCA tasks, optionally without injected dependency grounding.
     
@@ -96,6 +110,10 @@ def planner_agent(state: PlannerAgentState) -> dict:
     
     if not symptoms:
         return {"rca_tasks": []}
+
+    if state.get("architecture") == "no_planner":
+        logger.info("Planner Agent: no LLM planning, one RCA task per symptom")
+        return {"rca_tasks": symptom_tasks(symptoms)}
     
     no_grounding = state.get("architecture") == "planner_no_grounding"
 

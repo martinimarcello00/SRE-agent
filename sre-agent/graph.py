@@ -72,9 +72,13 @@ def update_rca_task_status(state: SreParentState) -> dict:
             logger.warning(f"Requested RCA tasks already completed or missing: {sorted(missing_priorities)}")
     else:
         # First iteration: select first pending tasks for parallel execution
-        batch_size = config_settings.RCA_TASKS_PER_ITERATION
-        logger.info(f"Updating status for first {batch_size} tasks.")
         pending_tasks = [task for task in rca_tasks if task.status == "pending"]
+        # no_planner ablation: every symptom gets its RCA agent at once, in triage order
+        if state.get("architecture") == "no_planner":
+            batch_size = len(pending_tasks)
+        else:
+            batch_size = config_settings.RCA_TASKS_PER_ITERATION
+        logger.info(f"Updating status for first {batch_size} tasks.")
         selected_tasks = pending_tasks[:batch_size]
 
     # Mark selected tasks as "in_progress" and persist other status transitions
