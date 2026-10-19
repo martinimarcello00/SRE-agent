@@ -52,7 +52,8 @@ async def run_sre_agent(
         trace_name: Optional name for the execution trace
         architecture: None or "multi_agent" runs the grounded multi-agent graph;
             "react_baseline" runs the single ReAct agent;
-            "planner_no_grounding" runs the multi-agent graph without planner DataGraph injection.
+            "planner_no_grounding" runs the multi-agent graph without planner DataGraph injection;
+            "agentic_triage" runs the multi-agent graph with a ReAct agent instead of the heuristic triage checks.
 
     Returns:
         Tuple of (result dictionary, execution time in seconds)
@@ -63,7 +64,7 @@ async def run_sre_agent(
 
     selected_architecture = "multi_agent" if architecture is None else architecture
     if selected_architecture not in {
-        "multi_agent", "react_baseline", "planner_no_grounding"
+        "multi_agent", "react_baseline", "planner_no_grounding", "agentic_triage"
     }:
         raise ValueError(f"Unsupported architecture: {selected_architecture!r}")
 
@@ -113,7 +114,8 @@ async def run_sre_agent(
             "agent_id" : agent_id,
             "architecture": selected_architecture,
             "parallel_rca_tasks": os.environ.get("RCA_TASKS_PER_ITERATION","Unknown"),
-            "max_tool_calls": os.environ.get("MAX_TOOL_CALLS","Unknown")
+            "max_tool_calls": os.environ.get("MAX_TOOL_CALLS","Unknown"),
+            "triage_max_tool_calls": os.environ.get("TRIAGE_MAX_TOOL_CALLS","Unknown")
         }
     }
     if trace_name:
@@ -254,6 +256,7 @@ def export_json_results(
     testbed["rca_tasks_per_iteration"] = os.environ.get("RCA_TASKS_PER_ITERATION", "")
     # Add tool calls budgeting parameter
     testbed["max_tool_calls"] = os.environ.get("MAX_TOOL_CALLS", "")
+    testbed["triage_max_tool_calls"] = os.environ.get("TRIAGE_MAX_TOOL_CALLS", "")
 
     export["testbed"] = testbed
     

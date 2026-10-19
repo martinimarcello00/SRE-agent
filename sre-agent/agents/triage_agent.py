@@ -22,6 +22,7 @@ from models import TriageAgentState, SymptomList
 from prompts import TRIAGE_SYSTEM_PROMPT, TRIAGE_HUMAN_PROMPT
 from config import GPT5_MINI
 from utils import get_system_prompt
+from .agentic_triage_agent import agentic_triage_graph
 
 
 def get_triage_data(state: TriageAgentState) -> dict:
@@ -152,11 +153,17 @@ def build_triage_graph():
     # Add nodes
     builder.add_node("gather-triage-data", get_triage_data)
     builder.add_node("triage-agent", triage_agent)
+    builder.add_node("agentic-triage", agentic_triage_graph)
 
-    # Add edges
-    builder.add_edge(START, "gather-triage-data")
+    # Add edges: the agentic_triage ablation replaces the heuristic checks with a ReAct agent
+    builder.add_conditional_edges(
+        START,
+        lambda state: "agentic-triage" if state.get("architecture") == "agentic_triage" else "gather-triage-data",
+        ["agentic-triage", "gather-triage-data"],
+    )
     builder.add_edge("gather-triage-data", "triage-agent")
     builder.add_edge("triage-agent", END)
+    builder.add_edge("agentic-triage", END)
 
     return builder.compile().with_config(run_name="Triage Agent")
 

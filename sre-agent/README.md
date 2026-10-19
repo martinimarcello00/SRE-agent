@@ -71,6 +71,7 @@ The experiment runner uses the `architecture` field in an agent configuration:
 | Omitted or `"multi_agent"` | Multi-agent workflow with grounded planning (default). |
 | `"react_baseline"` | Single ReAct agent with all MCP tools. |
 | `"planner_no_grounding"` | Multi-agent workflow without DataGraph injection into the planner. |
+| `"agentic_triage"` | Multi-agent workflow with a ReAct triage agent instead of the heuristic triage checks. |
 
 For example, this is a fragment of an agent configuration:
 
@@ -104,6 +105,18 @@ For custom prompts, use `prompts_config["planner_no_grounding"]` to override the
 planner prompt. The normal `prompts_config["planner_agent"]` override is ignored in this mode
 so that grounded instructions cannot accidentally be restored; it still applies in normal mode.
 
+The [Agentic Triage P2 B7 configuration](./experiments_runner/agent-configurations/agentic-triage-p2-b7.json)
+(id `O`) is paired with the [Tool-free planning React P2 B7 control](./experiments_runner/agent-configurations/react-tool-free-planning-p2-b7.json)
+(id `F`), with the same budgets, concurrency, and planner/RCA/supervisor prompts. The heuristic
+checks of the triage (problematic pods, error and slow traces, anomalous pod metrics) are replaced
+by a ReAct agent with the same MCP tools as the RCA workers. It submits the usual symptom list
+to the planner with `submit_symptoms`, within `TRIAGE_MAX_TOOL_CALLS` tool calls (defaults to
+`MAX_TOOL_CALLS`). Its prompt names the four golden signals but none of the heuristic thresholds.
+If the agent stops without submitting, the symptom list is empty. The snapshot fields
+(`problematic_pods`, ...) stay empty; the result carries `triage_analysis` instead
+(`submitted`, `tools_stats`, `message_history`). Use `prompts_config["agentic_triage"]` to
+override its prompt; `prompts_config["triage_agent"]` is ignored in this mode.
+
 Direct launcher usage:
 
 ```python
@@ -131,6 +144,7 @@ Offline regression tests (no cluster, Neo4j, MCP server, or API key needed):
 PYTHONPATH=. poetry run python tests/test_planner_no_grounding.py
 PYTHONPATH=. poetry run python tests/test_architecture_selection.py
 PYTHONPATH=. poetry run python tests/test_react_baseline.py
+PYTHONPATH=. poetry run python tests/test_agentic_triage.py
 ```
 
 ### Modifying a Specific Component

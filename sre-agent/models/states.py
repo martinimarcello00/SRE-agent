@@ -7,6 +7,7 @@ from .reducers import merge_rca_analyses
 
 class TriageAgentState(TypedDict):
     """State for the Triage Agent"""
+    architecture: NotRequired[str]
     app_name: str
     app_summary: str
     target_namespace: str
@@ -16,6 +17,7 @@ class TriageAgentState(TypedDict):
     problematic_metrics: dict
     problematic_traces: dict
     symptoms: List[Symptom]
+    triage_analysis: NotRequired[dict]
     prompts_config: Dict[str, str]
 
 
@@ -69,6 +71,7 @@ class SreParentState(TypedDict):
     problematic_metrics: dict
     problematic_traces: dict
     symptoms: List[Symptom]
+    triage_analysis: NotRequired[dict]  # agentic_triage only: tool stats and message history
 
     # Planner agent
     rca_tasks: List[RCATask]

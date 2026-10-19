@@ -423,7 +423,7 @@ def main():
 
                     overrides_to_log = {
                         key: agent_conf[key]
-                        for key in ("MAX_TOOL_CALLS", "RCA_TASKS_PER_ITERATION")
+                        for key in ("MAX_TOOL_CALLS", "TRIAGE_MAX_TOOL_CALLS", "RCA_TASKS_PER_ITERATION")
                         if key in agent_conf
                     }
 

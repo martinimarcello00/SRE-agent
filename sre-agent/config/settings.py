@@ -75,6 +75,9 @@ def use_fallback_openai_key() -> bool:
 # Investigation Budget
 MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", 8))
 
+# Triage budget (agentic_triage architecture only), defaults to the RCA budget
+TRIAGE_MAX_TOOL_CALLS = int(os.environ.get("TRIAGE_MAX_TOOL_CALLS", MAX_TOOL_CALLS))
+
 # RCA tasks per iteration
 RCA_TASKS_PER_ITERATION = int(os.environ.get("RCA_TASKS_PER_ITERATION", 3))
 
@@ -88,16 +91,19 @@ AIOPSLAB_DIR = os.environ.get("AIOPSLAB_DIR")
 
 def apply_config_overrides(overrides: Mapping[str, Any]) -> None:
     """Update runtime knobs (called before launching each agent run)."""
-    global MAX_TOOL_CALLS, RCA_TASKS_PER_ITERATION, TRACE_SERVICE_STARTING_POINT
+    global MAX_TOOL_CALLS, TRIAGE_MAX_TOOL_CALLS, RCA_TASKS_PER_ITERATION, TRACE_SERVICE_STARTING_POINT
 
     if "MAX_TOOL_CALLS" in overrides:
         os.environ["MAX_TOOL_CALLS"] = str(overrides["MAX_TOOL_CALLS"])
+    if "TRIAGE_MAX_TOOL_CALLS" in overrides:
+        os.environ["TRIAGE_MAX_TOOL_CALLS"] = str(overrides["TRIAGE_MAX_TOOL_CALLS"])
     if "RCA_TASKS_PER_ITERATION" in overrides:
         os.environ["RCA_TASKS_PER_ITERATION"] = str(overrides["RCA_TASKS_PER_ITERATION"])
     if "TRACE_SERVICE_STARTING_POINT" in overrides:
         os.environ["TRACE_SERVICE_STARTING_POINT"] = str(overrides["TRACE_SERVICE_STARTING_POINT"])
 
     MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", MAX_TOOL_CALLS))
+    TRIAGE_MAX_TOOL_CALLS = int(os.environ.get("TRIAGE_MAX_TOOL_CALLS", MAX_TOOL_CALLS))
     RCA_TASKS_PER_ITERATION = int(os.environ.get("RCA_TASKS_PER_ITERATION", RCA_TASKS_PER_ITERATION))
     TRACE_SERVICE_STARTING_POINT = os.environ.get("TRACE_SERVICE_STARTING_POINT", TRACE_SERVICE_STARTING_POINT)
 
