@@ -42,6 +42,10 @@ def get_resource_dependencies(symptom: Symptom) -> dict:
 
     if symptom.resource_type == "pod":
         services = k8s_api.get_services_from_pod(symptom.affected_resource)
+        if not services["services"]:
+            # e.g. a pod name that does not exist: plan without dependencies instead of crashing the run
+            logger.warning(f"Planner Agent: no service found for pod {symptom.affected_resource}: {services.get('error')}")
+            return result
         service = services["services"][0]["service_name"]
     else:
         service = symptom.affected_resource
