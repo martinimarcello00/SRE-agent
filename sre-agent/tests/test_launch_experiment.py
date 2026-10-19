@@ -31,6 +31,7 @@ fake_tools.get_mcp_tools = None
 sys.modules["tools"] = fake_tools
 
 import agents.react_baseline_agent as react_baseline_agent  # noqa: E402
+import agents.agentic_triage_agent as agentic_triage_agent  # noqa: E402
 import launch_experiment  # noqa: E402
 
 
@@ -59,6 +60,16 @@ result, seconds = asyncio.run(launch_experiment.run_sre_agent(
     trace_name="test", agent_configuration_name="M", agent_id="M", architecture="react_baseline"))
 assert result["final_report"]["localization"] == ["a"]
 assert "messages" not in result and result["architecture"] == "react_baseline"
+
+# agentic triage runs through the parent and triage graphs: its outputs must survive both state schemas
+agentic_triage_agent.GPT5_MINI = ScriptedLLM([call("kubectl_get", {"resource": "pods"}, 1),
+                                              call("submit_symptoms", {"symptoms": []}, 2)])
+result, seconds = asyncio.run(launch_experiment.run_sre_agent(
+    app_name="x", fault_name="f", app_summary="s", target_namespace="ns", trace_service_starting_point="frontend",
+    trace_name="test", agent_configuration_name="O", agent_id="O", architecture="agentic_triage"))
+assert result["triage_analysis"]["tools_stats"] == {"kubectl_get": 1, "submit_symptoms": 1}
+assert result["symptoms"] == [] and result["final_report"]["detection"] is False
+assert result["problematic_pods"] == {} and result["architecture"] == "agentic_triage"  # heuristic checks skipped
 
 # an unknown architecture fails before any graph runs, instead of silently running multi_agent
 try:
