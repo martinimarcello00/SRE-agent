@@ -51,7 +51,8 @@ ok "docker daemon"
 echo "== Registry mirrors"
 "$ROOT/registry/setup-registry.sh"
 for p in 5001 5002 5003; do
-  curl -fs --max-time 5 "http://127.0.0.1:$p/v2/" >/dev/null || fail "registry on :$p does not answer (docker logs kind-registry*)"
+  for _ in $(seq 30); do curl -fs --max-time 5 "http://127.0.0.1:$p/v2/" >/dev/null && break; sleep 1; done
+  curl -fs --max-time 5 "http://127.0.0.1:$p/v2/" >/dev/null || fail "registry on :$p does not answer after 30s (docker logs kind-registry*)"
 done
 ok "registries answer on 5001/5002/5003"
 
