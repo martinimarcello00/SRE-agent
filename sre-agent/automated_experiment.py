@@ -1,0 +1,569 @@
+from experiments_runner import (
+    setup_cluster_and_aiopslab,
+    cleanup_cluster,
+    load_fault_scenarios,
+    load_agent_configurations,
+)
+from experiments_runner.automated_datagraph import update_datagraph_for_scenario
+from experiments_runner.readiness import wait_until_ready
+
+import asyncio
+import datetime
+import json
+import logging
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Optional
+
+from dotenv import load_dotenv
+
+from utils import TelegramNotification
+from config import apply_config_overrides, AIOPSLAB_DIR, TRACE_SERVICE_STARTING_POINT, MCP_CONFIG, get_mcp_config, select_openai_key
+from api.config_manager import ConfigManager  # MCP-server is on sys.path via config
+from evaluation import evaluate_experiment
+
+# Configure logging for the SRE Agent script
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("mcp.client.streamable_http").setLevel(logging.WARNING)
+
+logger = logging.getLogger("automated_experiment")
+
+
+def run_readiness_gate(scenario: dict) -> dict:
+    """Wait for the freshly set-up environment to be healthy; returns the failed checks ({} when ready or bypassed)."""
+    from api.jaeger_api import JaegerAPI  # MCP-server is on sys.path via config; fresh clients: every kind create rewrites the kube-context
+    import requests
+    jaeger = JaegerAPI(jaeger_url=os.environ.get("JAEGER_URL"))
+    prom_url = os.environ.get("PROMETHEUS_SERVER_URL", "http://localhost:32000")
+    prom_up = lambda: bool(requests.get(f"{prom_url}/api/v1/query", params={"query": "up"}, timeout=5).json()["data"]["result"])
+    return wait_until_ready(scenario, jaeger.k8s_client, lambda svc: jaeger.get_jaeger_traces(svc, limit=20, lookback="5m"), prom_up)
+
+
+def get_experiment_dir_path(dir_name: str, experiment_path: Optional[str] = None):
+    """
+    Returns the directory path for storing experiment results.
+    Creates the directory if it does not exist.
+
+    Args:
+        dir_name (str): Name of the experiment batch directory.
+        experiment_path (Optional[str]): Custom base path for results. If None, uses RESULTS_PATH env var or 'results'.
+
+    Returns:
+        Path: Path object for the experiment directory.
+    """
+    if experiment_path:
+        output_dir = experiment_path
+    else:
+        output_dir = os.environ.get("RESULTS_PATH", "results")
+    output_dir_path = Path(output_dir)
+
+    if not output_dir_path.is_absolute():
+        output_dir_path = Path.cwd() / output_dir_path
+    output_dir_path.mkdir(parents=True, exist_ok=True)
+
+    # Create the experiment subdirectory
+    experiment_dir_path = output_dir_path / dir_name
+    experiment_dir_path.mkdir(parents=True, exist_ok=True)
+
+    return experiment_dir_path
+
+async def run_experiment(
+    agent_id: str,
+    fault_scenario: dict,
+    agent_configuration_name: str,
+    run_sre_agent_func,
+    export_json_results_func,
+    evaluation_func,
+    batch_name: str,
+    results_group_dir: Optional[Path] = None,
+    prompts_config: Optional[dict[str,str]] = None,
+    architecture: Optional[str] = None,
+    run_index: int = 0,
+    total_runs: int = 1
+) -> tuple[dict, Path]:
+    
+    fault_name = fault_scenario.get("fault_type", "")
+    app_name = fault_scenario.get("scenario", "")
+    app_summary = fault_scenario.get("app_summary", "")
+    target_namespace = fault_scenario.get("target_namespace", "")
+    trace_service_starting_point = fault_scenario.get("service_starting_point", "") or TRACE_SERVICE_STARTING_POINT
+    wait_time_before_running_agent = int(fault_scenario.get("wait_before_launch_agent", 60))
+
+    logger.info(
+        "Waiting %s seconds before running the SRE agent",
+        wait_time_before_running_agent,
+    )
+    time.sleep(wait_time_before_running_agent)
+
+    experiment_name = f"{agent_configuration_name} - {app_name} - {fault_name} ({batch_name})"
+    logger.info("Launching experiment: %s", experiment_name)
+
+    result, exec_time = await run_sre_agent_func(
+        app_name=app_name,
+        fault_name=fault_name,
+        app_summary=app_summary,
+        target_namespace=target_namespace,
+        trace_service_starting_point=trace_service_starting_point,
+        trace_name=experiment_name,
+        agent_configuration_name=agent_configuration_name,
+        agent_id=agent_id,
+        prompts_config=prompts_config,
+        architecture=architecture
+    )
+
+    logger.info("Waiting 15 seconds to allow LangSmith to import final experiment data before saving results...")
+    time.sleep(15)
+
+    # Save results
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    safe_experiment_name = experiment_name.replace(" ", "-")
+    # Only add index prefix if there are multiple runs
+    if total_runs > 1:
+        output_file = f"{run_index}_{date_str}_{safe_experiment_name}.json"
+    else:
+        output_file = f"{date_str}_{safe_experiment_name}.json"
+
+    enriched_result = export_json_results_func(
+        result=result,
+        experiment_name=experiment_name,
+        exec_time = exec_time,
+        fault_name=fault_name,
+        application_name=app_name,
+        target_namespace=target_namespace,
+        trace_service_starting_point=trace_service_starting_point,
+        agent_configuration_name=agent_configuration_name,
+        agent_id=agent_id
+    )
+
+    if results_group_dir is not None:
+        output_dir_path = results_group_dir
+    else:
+        output_dir = os.environ.get("RESULTS_PATH", "results")
+        output_dir_path = Path(output_dir)
+        if not output_dir_path.is_absolute():
+            output_dir_path = Path.cwd() / output_dir_path
+    output_dir_path.mkdir(parents=True, exist_ok=True)
+    output_file_path = output_dir_path / output_file
+
+    enriched_result["jaeger_start_us"] = os.environ.get("JAEGER_START_US")
+    enriched_result["evaluation"] = evaluate_experiment(fault_scenario,enriched_result)
+
+    with open(output_file_path, "w") as f:
+        json.dump(enriched_result, f, indent=2, default=str)
+
+    logger.info("Results saved to %s", output_file_path)
+    logger.info("Experiment completed successfully")
+
+    return enriched_result, output_file_path
+
+def main():
+
+    ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+    load_dotenv(dotenv_path=ENV_PATH)
+
+    # Get the fault scenarios
+    fault_scenarios = load_fault_scenarios()
+
+    # Get the agent configurations
+    agents_configurations = load_agent_configurations()
+    
+    # Sort agent configurations by their id
+    agents_configurations = sorted(agents_configurations, key=lambda x: x.get("id", ""))
+
+    if not fault_scenarios:
+        logger.error("No fault scenarios found. Exiting.")
+        return
+    
+    if not agents_configurations:
+        logger.error("No agent configurations found. Exiting.")
+        return
+
+    # Calculate total runs accounting for multiple runs per configuration
+    total_runs = sum(len(fault_scenarios) * agent.get("runs", 1) for agent in agents_configurations)
+    print(f"\n\nThe following experiments will be executed ({total_runs} experiments):")
+    for scenario_idx, scenario in enumerate(fault_scenarios, start=1):
+        for config_idx, agent in enumerate(agents_configurations, start=1):
+            agent_id = agent.get("id", "Unknown ID")
+            scenario_name = scenario.get("scenario", "Unknown Scenario")
+            fault_type = scenario.get("fault_type", "Unknown Fault")
+            agent_conf_name = agent.get("name", "Unknown Agent Configuration")
+            num_runs = agent.get("runs", 1)
+            runs_suffix = f" ({num_runs} runs)" if num_runs > 1 else ""
+            print(f"{scenario_idx}{agent_id}. {agent_conf_name} - {scenario_name} — {fault_type}{runs_suffix}")
+
+    proceed_input = input("\nProceed with these experiments? [y/N]: ").strip().lower()
+    if proceed_input not in {"y", "yes"}:
+        logger.info("Aborting execution at user request.")
+        return
+
+    default_batch_name = datetime.datetime.now().strftime("batch-%Y%m%d-%H%M%S")
+    batch_dir_input = input(
+        f"Enter directory name for this experiment batch [{default_batch_name}]: "
+    ).strip()
+    batch_dir_name = batch_dir_input or default_batch_name
+
+    enable_notifications = False
+    telegram_notifier: TelegramNotification | None = None
+    telegram_handler: logging.Handler | None = None
+    telegram_choice = input("Enable Telegram notifications? [y/N]: ").strip().lower()
+    if telegram_choice in {"y", "yes"}:
+        telegram_notifier = TelegramNotification()
+        try:
+            telegram_handler = telegram_notifier.create_log_handler()
+            telegram_handler.setLevel(logging.ERROR)
+            formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+            telegram_handler.setFormatter(formatter)
+            logging.getLogger().addHandler(telegram_handler)
+
+            telegram_notifier.send_telegram_message(
+                f"✅ Telegram notifications enabled for SRE automated experiments ({batch_dir_name})"
+            )
+            enable_notifications = True
+        except RuntimeError as exc:
+            logger.error("Telegram notifications disabled: %s", exc)
+            telegram_notifier = None
+        except Exception as exc:
+            logger.error("Failed to initialize Telegram notifications: %s", exc)
+            if telegram_handler:
+                logging.getLogger().removeHandler(telegram_handler)
+            telegram_notifier = None
+
+    results_group_path = get_experiment_dir_path(batch_dir_name, None)
+    logger.info("Results will be stored under: %s", results_group_path)
+
+    total_scenarios = len(fault_scenarios)
+    total_configs = len(agents_configurations)
+
+    for scenario_idx, scenario in enumerate(fault_scenarios, start=1):
+        
+        # Override TARGET_NAMESPACE environment variable from scenario
+        target_namespace = scenario.get("target_namespace", "")
+        if target_namespace:
+            logger.info("Setting TARGET_NAMESPACE env var from scenario: %s", target_namespace)
+            os.environ["TARGET_NAMESPACE"] = target_namespace
+
+        # Override environment variables from scenario config
+        env_variables = scenario.get("env_variables", {})
+        if env_variables:
+            logger.info("Loading environment variable overrides from scenario config:")
+            for key, value in env_variables.items():
+                logger.info("  - Setting %s = %s", key, value)
+                os.environ[key] = str(value)
+        else:
+            logger.info("No environment variable overrides specified in scenario config")
+
+        # MCP_CONFIG is built once at import; MCP tools open a new stdio session per call
+        # reading this dict by reference, so refresh its env to pick up the scenario overrides.
+        MCP_CONFIG["cluster_api"]["env"].update(get_mcp_config()["cluster_api"]["env"])
+        # JAEGER_START_US is Astronomy-only and set after the gate: clear what the previous scenario left.
+        os.environ.pop("JAEGER_START_US", None)
+        MCP_CONFIG["cluster_api"]["env"].pop("JAEGER_START_US", None)
+        # The in-process clients (triage, readiness gate) read JAEGER_URL & co. from the ConfigManager singleton,
+        # loaded once per process: reload it, or every app after the first queries the first app's Jaeger.
+        ConfigManager().refresh_config()
+
+        if enable_notifications and telegram_notifier:
+            try:
+                telegram_notifier.send_telegram_message(
+                    f"🚀 Starting scenario {scenario_idx}/{total_scenarios}: {scenario.get('scenario', 'Unknown Scenario')} - {scenario.get('fault_type', 'Unknown fault type')}"
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("Failed to send Telegram start message: %s", exc)
+
+        if not select_openai_key():
+            logger.error("No OpenAI key pair is under its daily token limit. Aborting experiment.")
+            if enable_notifications and telegram_notifier:
+                try:
+                    telegram_notifier.send_telegram_message(
+                        "❌ Experiment aborted: token usage exceeded budget."
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("Failed to send Telegram abort message: %s", exc)
+            sys.exit(1)
+
+        logger.info("========= Scenario %d/%d =========", scenario_idx, total_scenarios)
+        logger.info("Scenario: %s", scenario.get("scenario", "Unknown Scenario"))
+        logger.info("Fault: %s", scenario.get("fault_type", "Unknown Fault"))
+
+        cluster_setup_successful = False
+        port_forward = None
+        try:
+            # Step 1: Update datagraph for this scenario
+            logger.info("=== STEP 1: Update Datagraph ===")
+            scenario_name = scenario.get("scenario", "")
+            if scenario_name:
+                update_datagraph_for_scenario(scenario_name)
+            else:
+                logger.warning("No scenario name found, skipping datagraph update")
+
+            # Step 2: Setup cluster and AIOpsLab
+            logger.info("=== STEP 2: Setup kind and aiopslab ===")
+
+            success = setup_cluster_and_aiopslab(
+                problem_id=scenario["aiopslab_command"],
+                aiopslab_dir=AIOPSLAB_DIR,
+                stream_cli_output=True,
+                setup_timeout=int(scenario.get("setup_timeout", 900)),
+                fault_duration=scenario.get("fault_duration"),
+            )
+
+            # Jaeger has no NodePort: the scenario brings its own port-forward (astronomy-shop), else forward svc/jaeger (social, hotel; same as AIOpsLab trace_api.py)
+            if success:
+                pf_command = scenario.get("port_forward_command") or f"kubectl port-forward svc/jaeger 16686:16686 -n {target_namespace}"
+                logger.info("Starting port-forward: %s", pf_command)
+                port_forward = subprocess.Popen(pf_command, shell=True, start_new_session=True)
+                time.sleep(5)
+
+            # Readiness gate: namespace, pods, flag, Jaeger, traces, Prometheus (SKIP_READINESS_GATE=1 bypasses it)
+            gate_failures = run_readiness_gate(scenario) if success else {}
+            success = success and not gate_failures
+            # Jaeger ignores lookback: from now on the agent queries only traces newer than this instant.
+            # Astronomy only: Social/Hotel have just the setup wrk job, which this filter would cut.
+            if success and scenario.get("scenario") == "Astronomy Shop":
+                os.environ["JAEGER_START_US"] = MCP_CONFIG["cluster_api"]["env"]["JAEGER_START_US"] = str(time.time_ns() // 1000)
+
+            if not success:
+                logger.error("Setup failed for scenario '%s' (failed readiness checks: %s); cleaning up cluster before moving to next scenario", scenario.get("scenario", "Unknown Scenario"), gate_failures or "none")
+                
+                # Attempt to clean up the cluster even though setup failed
+                try:
+                    cleanup_cluster()
+                    logger.info("Cluster cleanup completed after setup failure")
+                except Exception as cleanup_error:
+                    logger.error("Error during cleanup after setup failure: %s", cleanup_error)
+                
+                if enable_notifications and telegram_notifier:
+                    try:
+                        telegram_notifier.send_telegram_message(
+                            f"❌ Setup failed for scenario '{scenario.get('scenario', 'Unknown Scenario')}'. Failed readiness checks: {gate_failures or 'none'}. Cluster cleaned up. Skipping to next scenario."
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to send Telegram setup failure message: %s", exc)
+                continue
+            
+            cluster_setup_successful = True
+
+            # Import AFTER setup complete, before starting any event loop
+            from launch_experiment import run_sre_agent, export_json_results
+
+            # Step 3: Run your experiment (new event loop for async execution)
+
+            logger.info("=== STEP 3: Run SRE Agent ===")
+
+            for config_idx, agent_conf in enumerate(agents_configurations, start=1):
+                agent_name = agent_conf.get("name", "Unknown Agent Configuration")
+                agent_id = agent_conf.get("id", "Unknown ID")
+                prompts_config = agent_conf.get("prompts_config", {})
+                formatted_agent_name = f"{agent_id} - {agent_name}"
+                
+                # Get number of runs from agent configuration (default to 1)
+                num_runs = agent_conf.get("runs", 1)
+                
+                logger.info(
+                    "Running agent configuration %s (%d/%d) for scenario '%s': %s (%d run(s))",
+                    agent_id,
+                    config_idx,
+                    total_configs,
+                    scenario.get("scenario", "Unknown Scenario"),
+                    agent_name,
+                    num_runs,
+                )
+
+                # Create agent-specific results directory if multiple runs
+                agent_results_dir = results_group_path
+                if num_runs > 1:
+                    agent_result_dir_name = f"{agent_id} - {scenario.get('scenario', 'Unknown Scenario')} - {scenario.get('fault_type', 'Unknown Fault')}"
+                    agent_results_dir = results_group_path / agent_result_dir_name
+                    agent_results_dir.mkdir(parents=True, exist_ok=True)
+                    logger.info("Created agent-specific results directory: %s", agent_results_dir)
+
+                # Loop for multiple runs
+                for run_num in range(0, num_runs):
+                    if num_runs > 1:
+                        logger.info("========= Run %d/%d =========", run_num + 1, num_runs)
+                    
+                    experiment_label = f"{formatted_agent_name} - {scenario.get('app_name', scenario.get('scenario', 'Unknown App'))} - {scenario.get('fault_type', 'Unknown Fault')}"
+                    
+                    if num_runs > 1:
+                        experiment_label += f" (Run {run_num + 1}/{num_runs})"
+                    
+                    if enable_notifications and telegram_notifier:
+                        try:
+                            telegram_notifier.send_telegram_message(
+                                f"🧪 Starting experiment '{experiment_label}' ({agent_id})"
+                            )
+                        except Exception as exc:  # pragma: no cover
+                            logger.warning("Failed to send Telegram experiment start message: %s", exc)
+
+                    overrides_to_log = {
+                        key: agent_conf[key]
+                        for key in ("MAX_TOOL_CALLS", "TRIAGE_MAX_TOOL_CALLS", "RCA_TASKS_PER_ITERATION")
+                        if key in agent_conf
+                    }
+
+                    if overrides_to_log:
+                        logger.info("Applying overrides: %s", overrides_to_log)
+                    else:
+                        logger.info("No overrides specified; using existing runtime settings.")
+
+                    apply_config_overrides(agent_conf)
+
+                    if not select_openai_key():
+                        logger.error("No OpenAI key pair is under its daily token limit. Aborting experiment.")
+                        if enable_notifications and telegram_notifier:
+                            try:
+                                telegram_notifier.send_telegram_message(
+                                    "❌ Experiment aborted mid-run: token usage exceeded budget."
+                                )
+                            except Exception as exc:  # pragma: no cover
+                                logger.warning("Failed to send Telegram budget warning: %s", exc)
+                        sys.exit(1)
+
+                    enriched_result, output_file_path = asyncio.run(
+                        run_experiment(
+                            agent_id = agent_id,
+                            fault_scenario=scenario,
+                            agent_configuration_name=formatted_agent_name,
+                            batch_name=batch_dir_name,
+                            run_sre_agent_func=run_sre_agent,
+                            export_json_results_func=export_json_results,
+                            evaluation_func=evaluate_experiment,
+                            results_group_dir=agent_results_dir,
+                            prompts_config=prompts_config,
+                            architecture=agent_conf.get("architecture"),
+                            run_index=run_num,
+                            total_runs=num_runs
+                        )
+                    )
+
+                    logger.info(
+                        "Completed agent configuration %s run %d/%d for scenario '%s'",
+                        agent_id,
+                        run_num + 1,
+                        num_runs,
+                        scenario.get("scenario", "Unknown Scenario"),
+                    )
+
+                    if enable_notifications and telegram_notifier:
+                        try:
+                            final_report = enriched_result.get("final_report", {}) if isinstance(enriched_result, dict) else {}
+                            root_cause = final_report.get("root_cause", "Unknown root cause")
+                            detection = final_report.get("detection", False)
+                            localization = final_report.get("localization", [])
+                            stats = enriched_result.get("stats", {}) if isinstance(enriched_result, dict) else {}
+                            total_tokens = stats.get("total_tokens", "N/A")
+                            exec_seconds = stats.get("execution_time_seconds", "N/A")
+                            langsmith_url = stats.get("langsmith_url", "N/A")
+                            
+                            # Format numeric fields safely
+                            exec_seconds_str = str(int(round(exec_seconds))) if isinstance(exec_seconds, (int, float)) else str(exec_seconds)
+                            total_tokens_str = str(int(round(total_tokens))) if isinstance(total_tokens, (int, float)) else str(total_tokens)
+                            
+                            # Format localization field (sorted, or indicate if empty)
+                            if localization:
+                                localization_str = ", ".join(sorted(localization))
+                            else:
+                                localization_str = "No problems detected" if not detection else "Unable to localize"
+                            
+                            telegram_notifier.send_telegram_message(
+                                "\n".join(
+                                    [
+                                        f"✅ Experiment '{enriched_result.get('experiment_name', experiment_label)}' completed.",
+                                        f"Detection: {'✅ Yes' if detection else '❌ No'}",
+                                        f"Localization: {localization_str}",
+                                        f"Root cause: {root_cause}",
+                                        f"Execution time: {exec_seconds_str} seconds",
+                                        f"Total tokens: {total_tokens_str}",
+                                        f"LangSmith run: {langsmith_url}",
+                                    ]
+                                )
+                            )
+                        except Exception as exc:  # pragma: no cover
+                            logger.warning("Failed to send Telegram experiment completion message: %s", exc)
+
+                    logger.info("Pausing briefly before launching the next experiment...")
+                    time.sleep(10)
+
+            logger.info(
+                "All %d agent configurations executed for scenario '%s' without recreating the cluster",
+                total_configs,
+                scenario.get("scenario", "Unknown Scenario"),
+            )
+
+            if enable_notifications and telegram_notifier:
+                try:
+                    telegram_notifier.send_telegram_message(
+                        f"✅ Scenario '{scenario.get('scenario', 'Unknown Scenario')} - {scenario.get('fault_type', 'Unknown fault type')}' completed."
+                    )
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("Failed to send Telegram completion message: %s", exc)
+
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user (Ctrl+C); performing cleanup")
+            if enable_notifications and telegram_notifier:
+                try:
+                    telegram_notifier.send_telegram_message("⚠️ Experiment interrupted by user (Ctrl+C).")
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("Failed to send Telegram interrupt message: %s", exc)
+            raise  # Re-raise to be handled by outer exception handler
+        
+        except Exception as e:
+            logger.exception("Experiment execution failed for scenario '%s': %s", scenario.get("scenario", "Unknown Scenario"), e)
+            if enable_notifications and telegram_notifier:
+                try:
+                    telegram_notifier.send_telegram_message(
+                        f"❌ Experiment error in scenario '{scenario.get('scenario', 'Unknown Scenario')}': {e}"
+                    )
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("Failed to send Telegram exception message: %s", exc)
+            # Don't exit, just skip to next scenario after cleanup
+        
+        finally:
+            # Step 4: Cleanup (always executed at the end of each scenario iteration)
+            logger.info("=== STEP 4: Cleanup ===")
+            if port_forward:
+                os.killpg(port_forward.pid, signal.SIGTERM)
+            try:
+                # Cleanup cluster (MCP server cleanup is handled automatically by MultiServerMCPClient)
+                # This runs regardless of setup success to ensure any partial cluster is removed
+                cleanup_cluster()
+                logger.info("Cluster cleanup completed successfully")
+            except Exception as cleanup_error:
+                logger.error("Error during cluster cleanup: %s", cleanup_error)
+                if enable_notifications and telegram_notifier:
+                    try:
+                        telegram_notifier.send_telegram_message(
+                            f"⚠️ Cleanup error for scenario '{scenario.get('scenario', 'Unknown Scenario')}': {cleanup_error}"
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to send Telegram cleanup error message: %s", exc)
+            
+            logger.info("Pausing briefly before launching the next scenario...")
+            time.sleep(10)
+
+    if enable_notifications and telegram_notifier:
+        try:
+            telegram_notifier.send_telegram_message("🎉 Automated experiment batch completed successfully.")
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Failed to send Telegram final message: %s", exc)
+
+    if telegram_handler:
+        logging.getLogger().removeHandler(telegram_handler)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.warning("\n\nExperiment batch interrupted by user (Ctrl+C). Exiting.")
+        sys.exit(130)
+    except Exception as e:
+        logger.exception("Fatal error in experiment batch: %s", e)
+        sys.exit(1)

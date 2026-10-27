@@ -1,0 +1,399 @@
+import os
+import sys
+import time
+import logging
+import pexpect
+import subprocess
+import urllib.request
+from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
+
+# Local registry configuration - matches kind official documentation
+LOCAL_REGISTRY_NAME = "kind-registry"
+LOCAL_REGISTRY_PORT = 5001
+# Pull-through caches: upstream host -> (upstream server URL, registry container).
+# One container per upstream (see registry/setup-registry.sh); Astronomy Shop images are mostly on ghcr.io.
+REGISTRY_MIRRORS = {
+    "docker.io": ("https://registry-1.docker.io", LOCAL_REGISTRY_NAME),
+    "ghcr.io": ("https://ghcr.io", f"{LOCAL_REGISTRY_NAME}-ghcr"),
+    "quay.io": ("https://quay.io", f"{LOCAL_REGISTRY_NAME}-quay"),
+}
+
+
+def check_registry_mirrors() -> bool:
+    """Every mirror must be running and answer /v2/: a stopped one silently falls back to the upstream (cache lost)."""
+    ok = True
+    for host, (_, reg) in REGISTRY_MIRRORS.items():
+        port = subprocess.run(["docker", "port", reg, "5000/tcp"], capture_output=True, text=True)
+        try:
+            host_port = port.stdout.splitlines()[0].rsplit(":", 1)[1]
+            with urllib.request.urlopen(f"http://127.0.0.1:{host_port}/v2/", timeout=5) as r:
+                if r.status != 200:
+                    raise OSError(f"HTTP {r.status}")
+        except (IndexError, OSError) as e:
+            logger.error("Registry mirror for %s (%s) is not usable (%s). Start it with: docker start %s", host, reg, e, reg)
+            ok = False
+    return ok
+
+
+def kind_nodes() -> list[str]:
+    """IDs of the docker containers backing the nodes of the "kind" cluster (empty when it is gone)."""
+    out = subprocess.run(["docker", "ps", "-aq", "--filter", "label=io.x-k8s.kind.cluster=kind"], capture_output=True, text=True)
+    return out.stdout.split()
+
+
+def run_command_with_wait(command, timeout=600, encoding='utf-8', stream_output=False, wait_for_string=None):
+    """
+    Run a command and wait for it to complete or for a specific string to appear.
+    
+    Args:
+        command: The command to execute
+        timeout: Maximum time to wait for command completion (in seconds)
+        encoding: Character encoding for output
+        stream_output: If True, stream the subprocess output to stdout
+        wait_for_string: Optional string pattern to wait for before considering command complete
+        
+    Returns:
+        tuple: (exit_code, output)
+    """
+    logger.info("Running command: %s", command)
+
+    child = pexpect.spawn(command, encoding=encoding, timeout=timeout)
+    if stream_output:
+        child.logfile_read = sys.stdout
+    
+    try:
+        if wait_for_string:
+            # Wait for the specific string to appear
+            logger.info("Waiting for string pattern: %s", wait_for_string)
+            child.expect(wait_for_string)
+            output = child.before
+            logger.info("Found expected string pattern: %s", wait_for_string)
+            # Continue waiting for EOF to ensure process completes
+            try:
+                child.expect(pexpect.EOF, timeout=10)
+            except pexpect.TIMEOUT:
+                logger.debug("Process still running after string appeared, closing...")
+        else:
+            # Wait for the process to finish
+            child.expect(pexpect.EOF)
+            output = child.before
+        
+        child.close()
+        if output:
+            logger.debug("Command output for '%s':\n%s", command, output.strip())
+        return child.exitstatus, output
+    except pexpect.TIMEOUT:
+        logger.error("Command timed out after %s seconds: %s", timeout, command)
+        child.close(force=True)
+        return -1, None
+    except Exception as e:
+        logger.exception("Error running command '%s': %s", command, e)
+        child.close(force=True)
+        return -1, None
+
+
+def configure_kind_registry(
+    cluster_name="kind",
+    registry_port: int = LOCAL_REGISTRY_PORT,
+) -> bool:
+    """
+    Configure the kind cluster to use the local registry.
+    
+    Based on official kind documentation:
+    https://kind.sigs.k8s.io/docs/user/local-registry/
+    
+    This:
+    1. Creates the registry config directory on each node
+    2. Configures containerd to use the local registry
+    3. Connects the registry to the kind network
+    4. Adds a ConfigMap for registry discovery
+    
+    Args:
+        cluster_name: Name of the kind cluster (default: "kind")
+        registry_port: Port the registry is running on (default: 5001)
+        
+    Returns:
+        bool: True if configuration successful, False otherwise
+    """
+    logger.info("Configuring kind cluster '%s' to use local registry", cluster_name)
+    
+    registry_dir = f"/etc/containerd/certs.d/localhost:{registry_port}"
+    
+    # Step 0: Connect registry to kind network
+    logger.info("Connecting registry to kind network")
+    try:
+        # Connect registry container to kind network if it exists
+        for _, reg in REGISTRY_MIRRORS.values():
+            cmd = f"docker network connect {cluster_name} {reg} 2>/dev/null || true"
+            subprocess.run(cmd, shell=True, capture_output=True)
+        logger.info("Registry connected to kind network")
+    except Exception as e:
+        logger.warning("Could not connect registry to kind network: %s", e)
+    
+    # Step 1: Add registry config to all nodes
+    logger.info("Configuring containerd on cluster nodes")
+    try:
+        # Get list of nodes
+        get_nodes_cmd = f"kind get nodes --name {cluster_name}"
+        result = subprocess.run(get_nodes_cmd, shell=True, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            logger.error("Failed to get cluster nodes: %s", result.stderr)
+            return False
+        
+        nodes = [n for n in result.stdout.strip().split('\n') if n]
+        
+        for worker in nodes:
+            logger.info("Configuring registry on worker node: %s", worker)
+            
+            # 1. Configure localhost:5001 (for explicit usage like localhost:5001/image)
+            cmd = f"docker exec {worker} mkdir -p /etc/containerd/certs.d/localhost:{registry_port}"
+            subprocess.run(cmd, shell=True, check=True)
+            
+            # Use registry container hostname which Docker DNS resolves automatically
+            hosts_config = (
+                f"[host.\\\"http://{LOCAL_REGISTRY_NAME}:5000\\\"]\n"
+            )
+            
+            cmd = (
+                f"docker exec {worker} "
+                f"bash -c \"cat > /etc/containerd/certs.d/localhost:{registry_port}/hosts.toml << 'EOF'\n"
+                f"{hosts_config}"
+                f"EOF\""
+            )
+            subprocess.run(cmd, shell=True, check=True)
+
+            # 2. Configure transparent mirrors (docker.io, ghcr.io, quay.io)
+            for host, (server, reg) in REGISTRY_MIRRORS.items():
+                cmd = f"docker exec {worker} mkdir -p /etc/containerd/certs.d/{host}"
+                subprocess.run(cmd, shell=True, check=True)
+
+                mirror_config = (
+                    f"server = \\\"{server}\\\"\n"
+                    f"\n"
+                    f"[host.\\\"http://{reg}:5000\\\"]\n"
+                    f"  capabilities = [\\\"pull\\\", \\\"resolve\\\"]\n"
+                )
+
+                cmd = (
+                    f"docker exec {worker} "
+                    f"bash -c \"cat > /etc/containerd/certs.d/{host}/hosts.toml << 'EOF'\n"
+                    f"{mirror_config}"
+                    f"EOF\""
+                )
+                subprocess.run(cmd, shell=True, check=True)
+
+            logger.info("Worker node %s configured with registry mirror", worker)
+        
+    except subprocess.CalledProcessError as e:
+        logger.error("Issue configuring worker nodes: %s", e)
+        return False
+
+    # Step 2: Document the local registry
+    logger.info("Documenting local registry in ConfigMap")
+    try:
+        config_map_yaml = (
+            "apiVersion: v1\n"
+            "kind: ConfigMap\n"
+            "metadata:\n"
+            "  name: local-registry-hosting\n"
+            "  namespace: kube-public\n"
+            "data:\n"
+            "  localRegistryHosting.v1: |\n"
+            f"    host: \"localhost:{registry_port}\"\n"
+            "    help: \"https://kind.sigs.k8s.io/docs/user/local-registry/\"\n"
+        )
+        
+        cmd = f"echo '{config_map_yaml}' | kubectl apply -f -"
+        subprocess.run(cmd, shell=True, check=True, capture_output=True)
+        logger.info("Local registry documented in kube-public/local-registry-hosting ConfigMap")
+    except subprocess.CalledProcessError as e:
+        logger.warning("Failed to create local registry ConfigMap: %s", e)
+
+    logger.info("Registry configuration complete - local registry enabled with fallback to default registries")
+    return True
+
+
+def setup_cluster_and_aiopslab(
+    problem_id,
+    kind_config_path=None,
+    aiopslab_dir=None,
+    cluster_timeout=600,
+    setup_timeout=900,
+    stream_cluster_output=False,
+    stream_cli_output=False,
+    enable_local_registry=True,
+    fault_duration=None,
+):
+    """
+    Set up the experiment environment: create kind cluster and initialize AIOpsLab.
+    
+    Args:
+        problem_id: The problem/experiment ID to start
+        kind_config_path: Path to kind config file (optional, uses default if not provided)
+        aiopslab_dir: Directory where AIOpsLab is located (where cli.py and pyproject.toml are)
+                      If None, uses the directory of this script
+        cluster_timeout: Timeout for cluster creation in seconds
+        setup_timeout: Timeout for problem setup in seconds
+        stream_cluster_output: If True, stream kind cluster command output to stdout
+        stream_cli_output: If True, stream AIOpsLab CLI output to stdout
+        enable_local_registry: If True, configure the cluster to use the local registry
+        fault_duration: Chaos Mesh fault duration in seconds (optional, uses AIOpsLab default if not provided)
+        
+    Returns:
+        bool: True if setup successful, False otherwise
+    """
+    script_dir = Path(__file__).parent
+    
+    # Determine AIOpsLab directory
+    if aiopslab_dir is None:
+        aiopslab_dir = script_dir
+    else:
+        aiopslab_dir = Path(aiopslab_dir).resolve()
+    
+    logger.info("AIOpsLab directory: %s", aiopslab_dir)
+    
+    if enable_local_registry and not check_registry_mirrors():
+        return False
+
+    # Step 1: Create kind cluster
+    logger.info("=== STEP 1: Create kind cluster ===")
+    
+    if kind_config_path is None:
+        kind_config_path = aiopslab_dir / "kind" / "kind-config-x86.yaml"
+    else:
+        kind_config_path = Path(kind_config_path)
+    
+    if not kind_config_path.exists():
+        logger.error("Kind config file not found at %s", kind_config_path)
+        return False
+
+    # A node left by a failed delete (or an interrupted batch) makes `kind create` fail
+    if kind_nodes() and not cleanup_cluster():
+        return False
+
+    cluster_command = f"kind create cluster --config {kind_config_path}"
+    exit_code, _ = run_command_with_wait(
+        cluster_command,
+        timeout=cluster_timeout,
+        stream_output=stream_cluster_output,
+    )
+    
+    if exit_code != 0:
+        logger.error("Failed to create kind cluster (exit code: %s)", exit_code)
+        return False
+    
+    logger.info("Kind cluster created successfully")
+    
+    # Give cluster a moment to stabilize
+    logger.info("Waiting 30 seconds for cluster to stabilize...")
+    time.sleep(30)
+    
+    # Step 2: Optional - Configure registry with cluster
+    if enable_local_registry:
+        logger.info("=== STEP 2: Configure local registry ===")
+        if not configure_kind_registry("kind", LOCAL_REGISTRY_PORT):
+            logger.warning("Failed to configure registry; continuing without it")
+    
+    # Step 3: Start AIOpsLab CLI in background
+    logger.info("=== STEP 3: Start AIOpsLab CLI ===")
+
+    # Change to AIOpsLab directory and run poetry from there
+    command = f"cd {aiopslab_dir} && poetry run python cli.py"
+    logger.info("Starting CLI command: %s", command)
+    
+    # Use bash with login shell (-l) to properly source environment in tmux
+    # This ensures proper PATH, environment variables, and shell initialization
+    full_command = f"bash -l -c '{command}'"
+    logger.info("Starting CLI with environment: %s", full_command)
+    
+    env = dict(os.environ)
+    if fault_duration:
+        env["AIOPSLAB_FAULT_DURATION"] = f"{int(fault_duration)}s"
+        logger.info("Fault duration override: %s", env["AIOPSLAB_FAULT_DURATION"])
+
+    child = pexpect.spawn('/bin/bash', ['-l', '-c', command], encoding='utf-8', timeout=setup_timeout, env=env)
+    if stream_cli_output:
+        child.logfile_read = sys.stdout
+    
+    try:
+        # Wait for the first prompt
+        logger.info("Waiting for CLI to start...")
+        child.expect('aiopslab>', timeout=30)
+        logger.info("CLI started")
+        if child.before:
+            logger.debug("CLI initial output:\n%s", child.before.strip())
+        
+        # Send the start command
+        start_cmd = f"start {problem_id}"
+        logger.info("Sending CLI command: %s", start_cmd)
+        child.sendline(start_cmd)
+        
+        logger.info(
+            "Waiting for problem initialization (timeout: %s s)...",
+            setup_timeout,
+        )
+        logger.debug(
+            "Initialization includes loading the problem, displaying context, and the first env message",
+        )
+        
+        # prompt_toolkit repaints the typed "aiopslab> start ..." line, so 'aiopslab>' can match before
+        # init_problem even starts: wait for the "Environment" panel, printed only after it, then the real prompt
+        child.expect('Environment', timeout=setup_timeout)
+        logger.info("Environment panel displayed (init_problem finished)")
+        if child.before:
+            logger.debug("CLI output before environment panel:\n%s", child.before.strip())
+        
+        child.expect('aiopslab>', timeout=30)
+        logger.info("CLI ready for actions")
+        if child.before:
+            logger.debug("CLI output before ready prompt:\n%s", child.before.strip())
+        
+        logger.info("Environment ready")
+        logger.info("Problem '%s' initialized", problem_id)
+        # The CLI is killed (SIGHUP) when child is garbage-collected on return. Intentional: SIGHUP skips AIOpsLab's
+        # atexit fault recovery, so the injected fault stays active. Do not send `exit` or Ctrl-C here.
+        logger.info("Call cleanup_cluster() when done.")
+        
+        return True
+        
+    except Exception as e:
+        logger.exception("Failed to initialize AIOpsLab: %s", e)
+        try:
+            child.close(force=True)
+        except:
+            pass
+        return False
+
+
+def cleanup_cluster(cluster_timeout=120, stream_output=False, attempts=5, retry_wait=10):
+    """
+    Delete the kind cluster and check that its nodes are really gone.
+
+    Docker can fail to kill a loaded node ("could not kill container: tried to kill container, but did not
+    receive an exit event") and leave it running: the next `kind create cluster` then fails and the scenario
+    is lost. The node's container is the ground truth, not the command's output.
+
+    Args:
+        cluster_timeout: Timeout for each deletion in seconds
+        stream_output: If True, stream the deletion command output to stdout
+        attempts: How many times to run the deletion before giving up
+        retry_wait: Seconds to wait before retrying
+
+    Returns:
+        bool: True if no node of the cluster is left, False otherwise
+    """
+    for attempt in range(1, attempts + 1):
+        logger.info("Deleting kind cluster (attempt %d/%d)", attempt, attempts)
+        exit_code, output = run_command_with_wait("kind delete cluster", timeout=cluster_timeout, stream_output=stream_output)
+        if not kind_nodes():
+            logger.info("Kind cluster deleted successfully")
+            return True
+        logger.warning("Kind nodes still present after delete (exit code: %s, output: %s); retrying in %d s",
+                       exit_code, (output or "").strip()[-200:], retry_wait)
+        time.sleep(retry_wait)
+    logger.error("Kind cluster nodes still present after %d delete attempts", attempts)
+    return False
