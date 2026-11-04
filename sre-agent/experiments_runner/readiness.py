@@ -102,9 +102,16 @@ CHECKS = {"C1": _c1, "C2": _c2, "C3": _c3, "C4": _c4, "C5": _c5, "C6": _c6, "C7"
 def check_environment(scenario, core, traces, prom_up, now=time.time, prom_query=None, chaos=None):
     """Failed checks as {id: reason}; empty when the environment is healthy."""
     failed = {}
+    fetched = {}
+
+    def traces_once(svc):  # C5 and C6 read the same traces: one Jaeger query per poll
+        if svc not in fetched:
+            fetched[svc] = traces(svc)
+        return fetched[svc]
+
     for cid, check in CHECKS.items():
         try:
-            err = check(scenario, core=core, traces=traces, prom_up=prom_up, now=now, prom_query=prom_query, chaos=chaos)
+            err = check(scenario, core=core, traces=traces_once, prom_up=prom_up, now=now, prom_query=prom_query, chaos=chaos)
         except Exception as e:  # an unreachable API is a failed check, not a crash
             err = f"{type(e).__name__}: {' '.join(str(e).splitlines()[:2])}"[:120]
         if err:

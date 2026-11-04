@@ -231,7 +231,7 @@ def run_once(run, attempt_dir, args, deps):
             except Exception as e:
                 meta["export_errors"]["cluster_state"] = repr(e)
             try:
-                with deps.port_forward(scenario):  # a fresh one: a port-forward rarely survives a 90 min session
+                with deps.port_forward(scenario):  # opened again: nothing needs Jaeger during the observation
                     meta["traces"] = deps.export_jaeger(scenario.get("service_starting_point") or "frontend", start, end, attempt_dir)
             except Exception as e:  # traces only serve later phases: recorded, but the run stays valid
                 meta["export_errors"]["jaeger"] = repr(e)

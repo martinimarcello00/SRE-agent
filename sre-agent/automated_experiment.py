@@ -231,6 +231,7 @@ def main():
 
     total_scenarios = len(fault_scenarios)
     total_configs = len(agents_configurations)
+    datagraph_scenario = None
 
     for scenario_idx, scenario in enumerate(fault_scenarios, start=1):
         
@@ -289,10 +290,11 @@ def main():
             # Step 1: Update datagraph for this scenario
             logger.info("=== STEP 1: Update Datagraph ===")
             scenario_name = scenario.get("scenario", "")
-            if scenario_name:
-                update_datagraph_for_scenario(scenario_name)
-            else:
+            if not scenario_name:
                 logger.warning("No scenario name found, skipping datagraph update")
+            elif scenario_name != datagraph_scenario:  # same app as the previous scenario: Neo4j already holds its graph
+                update_datagraph_for_scenario(scenario_name)
+                datagraph_scenario = scenario_name
 
             # Step 2: Setup cluster and AIOpsLab
             logger.info("=== STEP 2: Setup kind and aiopslab ===")
@@ -322,13 +324,6 @@ def main():
 
             if not success:
                 logger.error("Setup failed for scenario '%s' (failed readiness checks: %s); cleaning up cluster before moving to next scenario", scenario.get("scenario", "Unknown Scenario"), gate_failures or "none")
-                
-                # Attempt to clean up the cluster even though setup failed
-                try:
-                    cleanup_cluster()
-                    logger.info("Cluster cleanup completed after setup failure")
-                except Exception as cleanup_error:
-                    logger.error("Error during cleanup after setup failure: %s", cleanup_error)
                 
                 if enable_notifications and telegram_notifier:
                     try:

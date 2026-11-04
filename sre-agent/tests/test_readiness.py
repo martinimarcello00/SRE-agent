@@ -63,6 +63,8 @@ assert list(failed(traces=lambda svc: [])) == ["C6"]
 assert list(failed(traces=lambda svc: [{"spans": [{"startTime": int((time.time() - 900) * 1e6)}]}])) == ["C6"]  # stale
 assert failed(s={**scenario, "scenario": "Hotel Reservation"}, traces=lambda svc: []) == {}  # C6 only with continuous load
 assert list(failed(prom_up=lambda: False)) == ["C7"]
+queries = []
+assert failed(traces=lambda svc: queries.append(svc) or fresh) == {} and queries == ["frontend-proxy"]  # C5 and C6 share one query
 
 
 def boom():
