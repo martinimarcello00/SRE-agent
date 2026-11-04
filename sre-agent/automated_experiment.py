@@ -5,7 +5,7 @@ from experiments_runner import (
     load_agent_configurations,
 )
 from experiments_runner.automated_datagraph import update_datagraph_for_scenario
-from experiments_runner.readiness import wait_until_ready
+from experiments_runner.readiness import run_readiness_gate
 
 import asyncio
 import datetime
@@ -35,16 +35,6 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("mcp.client.streamable_http").setLevel(logging.WARNING)
 
 logger = logging.getLogger("automated_experiment")
-
-
-def run_readiness_gate(scenario: dict) -> dict:
-    """Wait for the freshly set-up environment to be healthy; returns the failed checks ({} when ready or bypassed)."""
-    from api.jaeger_api import JaegerAPI  # MCP-server is on sys.path via config; fresh clients: every kind create rewrites the kube-context
-    import requests
-    jaeger = JaegerAPI(jaeger_url=os.environ.get("JAEGER_URL"))
-    prom_url = os.environ.get("PROMETHEUS_SERVER_URL", "http://localhost:32000")
-    prom_up = lambda: bool(requests.get(f"{prom_url}/api/v1/query", params={"query": "up"}, timeout=5).json()["data"]["result"])
-    return wait_until_ready(scenario, jaeger.k8s_client, lambda svc: jaeger.get_jaeger_traces(svc, limit=20, lookback="5m"), prom_up)
 
 
 def get_experiment_dir_path(dir_name: str, experiment_path: Optional[str] = None):
