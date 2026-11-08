@@ -10,13 +10,43 @@ from types import SimpleNamespace as NS
 import collect_dataset as c
 
 # --- load schedule: reproducible from the seed, different between runs, long enough
-one = c.make_schedule("0:clean/noop__r1", 900, 300, [10, 30, 50])
-assert one == c.make_schedule("0:clean/noop__r1", 900, 300, [10, 30, 50])
-segments = [s.split(":") for s in c.make_schedule("k", 3000, 300, [10, 30, 50]).split(",")]
-assert len(segments) == 10 and {d for d, _ in segments} == {"300"} and {r for _, r in segments} <= {"10", "30", "50"}
-assert len(c.make_schedule("k", 301, 300, [10]).split(",")) == 2  # rounds up: the load must outlast the observation
-many = {c.make_schedule(f"k{i}", 3000, 300, [10, 30, 50]) for i in range(20)}
+one = c.make_schedule("0:clean/noop__r1", 900, (120, 480), [10, 30, 50], [0, 1])
+assert one == c.make_schedule("0:clean/noop__r1", 900, (120, 480), [10, 30, 50], [0, 1])
+segments = [[int(v) for v in s.split(":")] for s in c.make_schedule("k", 3000, (120, 480), [10, 30, 50], [0, 1, 2]).split(",")]
+assert sum(d for d, _, _ in segments) >= 3000 and all(120 <= d <= 480 for d, _, _ in segments)  # the load outlasts the observation
+assert {r for _, r, _ in segments} <= {10, 30, 50} and {m for _, _, m in segments} <= {0, 1, 2}
+assert len({d for d, _, _ in segments}) > 1  # no fixed period
+many = {c.make_schedule(f"k{i}", 3000, (120, 480), [10, 30, 50]) for i in range(20)}
 assert len(many) == 20
+
+
+def gap_to_injection(schedule, settle=300):
+    """Seconds between the injection and the nearest load change of a run."""
+    ends, t = [], 0
+    for segment in schedule.split(","):
+        t += int(segment.split(":")[0])
+        ends.append(t)
+    return min(abs(e - settle) for e in ends)
+
+
+# With fixed 300 s segments and a 300 s settle every injection fell on a load change; now it falls anywhere in a segment
+gaps = [gap_to_injection(c.make_schedule(f"7:test/x__r{i}", 1500, (120, 480), [10])) for i in range(200)]
+assert 0.2 < sum(g < 60 for g in gaps) / len(gaps) < 0.6 and max(gaps) > 120
+
+# --- clean sessions: split fixed by repetition number before collecting, the last two test sessions on unseen load levels
+assert [c.clean_split(r, [6, 2, 4], 2) for r in range(1, 13)] == ["train"] * 6 + ["val"] * 2 + ["test"] * 2 + ["test-unseen"] * 2
+args = c.parse_args(["--app", "hotel", "--out", "rel/raw", "--rates", "10,30", "--rates-unseen", "20,45"])
+assert args.out.is_absolute() and args.mixes == [0, 1, 2, 3] and args.segment == [120, 480] and args.split == [6, 2, 4]
+assert c.parse_args(["--app", "social", "--out", "/r", "--rates", "10", "--clean", "2"]).mixes == [0, 1, 2]  # a pilot needs no unseen levels
+for bad in (["--app", "hotel", "--out", "/r", "--rates", "10,30"],  # sessions 11 and 12 without unseen levels
+            ["--app", "hotel", "--out", "/r", "--rates", "10,30", "--rates-unseen", "30,45"],  # an unseen level that training sees
+            ["--app", "social", "--out", "/r", "--rates", "10", "--clean", "2", "--mixes", "3"],  # Social has mixes 0..2
+            ["--app", "hotel", "--out", "/r", "--rates", "10", "--clean", "13", "--rates-unseen", "20"]):  # more sessions than the split
+    try:
+        c.parse_args(bad)
+        raise AssertionError(f"accepted {bad}")
+    except SystemExit:
+        pass
 
 # --- plan: counts, exclusions, shuffled order that the seed reproduces
 H, S = "Hotel Reservation", "Social Network"
@@ -53,6 +83,8 @@ env = c.scenario_env({"target_namespace": "ns", "env_variables": {"JAEGER_URL": 
 assert json.loads(env["AIOPSLAB_DEV_CHAOS"]) == chaos and env["JAEGER_URL"] == "http://x" and env["TARGET_NAMESPACE"] == "ns"
 assert env["AIOPSLAB_SETTLE_S"] == "120" and env["AIOPSLAB_WORKLOAD_SCHEDULE"] == "300:10" and env["AIOPSLAB_CHAOS_MESH_ALWAYS"] == "1"
 assert env["AIOPSLAB_RUN_META"] == "/m/run.json" and env["AIOPSLAB_WORKLOAD_CONNECTIONS"] == "4"
+assert "AIOPSLAB_SOCIAL_GRAPH" not in env  # only Social has a graph to load
+assert c.scenario_env({"target_namespace": "ns", "scenario": S}, "300:10", 120, 4, "/m")["AIOPSLAB_SOCIAL_GRAPH"] == "socfb-Reed98"
 os.environ["JAEGER_URL"] = "before"
 os.environ.pop("AIOPSLAB_DEV_CHAOS", None)
 try:
@@ -123,8 +155,8 @@ except RuntimeError:
 assert c.jaeger_blocks(0, 700, 300) == [(0, 300), (300, 600), (600, 700)]
 seen = []
 total = c.export_jaeger(lambda p: seen.append(p) or [{"traceID": "t"}], "frontend", 1000, 1700, out)
-assert total == 3 and seen[0] == {"service": "frontend", "start": 1000 * 10**6, "end": 1300 * 10**6, "limit": c.JAEGER_TRACES_PER_BLOCK}
-assert (out / "jaeger/1000.json.gz").exists() and (out / "jaeger/1600.json.gz").exists()
+assert total == 24 and seen[0] == {"service": "frontend", "start": 1000 * 10**6, "end": 1030 * 10**6, "limit": c.JAEGER_TRACES_PER_BLOCK}
+assert (out / "jaeger/1000.json.gz").exists() and (out / "jaeger/1690.json.gz").exists()
 
 # --- cluster state: logs of every container, --previous only after a restart, wrk2 included
 pods = {"items": [{"metadata": {"name": "geo-1"}, "spec": {"containers": [{"name": "geo", "image": "img:1"}]},
@@ -133,11 +165,27 @@ pods = {"items": [{"metadata": {"name": "geo-1"}, "spec": {"containers": [{"name
                    "status": {"containerStatuses": [{"name": "c", "restartCount": 0}]}}]}
 state_out = Path(tempfile.mkdtemp())
 kube_calls = []
-images = c.export_cluster_state(lambda a: kube_calls.append(a) or (json.dumps(pods) if a[:2] == ["get", "pods"] else "x"), "ns", state_out)
-assert images == ["img:1", "img:2"]
+images, missing = c.export_cluster_state(lambda a: kube_calls.append(a) or (json.dumps(pods) if a[:2] == ["get", "pods"] else "x"), "ns", state_out)
+assert images == ["img:1", "img:2"] and missing == {}
 assert (state_out / "logs/geo-1__geo.previous.log.gz").exists() and not (state_out / "logs/up-1__c.previous.log.gz").exists()
 assert (state_out / "logs/wrk2.log.gz").exists() and (state_out / "events.json.gz").exists() and (state_out / "chaos.json.gz").exists()
 assert ["logs", "job/wrk2-job", "-n", "default"] in kube_calls
+
+# A Pending pod has no log: kubectl fails on it, and the other logs are still saved
+import subprocess
+pending = {"items": [{"metadata": {"name": "a-1"}, "spec": {"containers": [{"name": "a", "image": "i"}]}, "status": {}}, *pods["items"]]}
+
+
+def kubectl_pending(a):
+    if a[:2] == ["logs", "a-1"]:
+        raise subprocess.CalledProcessError(1, a, stderr='container "a" in pod "a-1" is waiting to start')
+    return json.dumps(pending) if a[:2] == ["get", "pods"] else "x"
+
+
+state_out = Path(tempfile.mkdtemp())
+images, missing = c.export_cluster_state(kubectl_pending, "ns", state_out)
+assert list(missing) == ["a-1__a.log.gz"] and "waiting to start" in missing["a-1__a.log.gz"]
+assert (state_out / "logs/geo-1__geo.log.gz").exists() and (state_out / "logs/wrk2.log.gz").exists()
 
 
 # --- one attempt end to end, with every external call faked
@@ -159,12 +207,13 @@ def deps(**kw):
     base = dict(margin_s=0, now=lambda: clock["t"], sleep=lambda s: (log.append(("sleep", s)), clock.__setitem__("t", clock["t"] + s)),
                 refresh_config=lambda: log.append("refresh"), provenance=lambda: {"aiopslab": {"sha": "abc"}}, setup=setup,
                 cleanup=lambda: log.append("cleanup"), gate=lambda s: log.append("gate") or {}, port_forward=port_forward,
-                export_prometheus=lambda *a: log.append("prom") or {"container_threads": 1}, export_cluster_state=lambda *a: log.append("state") or ["img"],
+                export_prometheus=lambda *a: log.append("prom") or {"container_threads": 1}, export_cluster_state=lambda *a: log.append("state") or (["img"], {}),
                 export_jaeger=lambda *a: log.append("jaeger") or 5)
     return NS(**{**base, **kw}), log
 
 
-args = NS(settle=120, segment=60, rates=[10, 30], observe=600, observe_clean=1200, connections=4, seed=7)
+args = NS(settle=120, segment=(60, 60), rates=[10, 30], rates_unseen=[20], mixes=[0], split=[6, 2, 4], unseen_sessions=2,
+          observe=600, observe_clean=1200, connections=4, seed=7)
 scenario = {"aiopslab_command": "pod_failure_hotel_res-detection-1", "target_namespace": "ns", "service_starting_point": "frontend",
             "scenario": H, "fault_type": "Pod failure", "target": "user", "accepted_targets": None, "fault_duration": 900}
 run = {"id": "test/pod_failure_hotel_res__r1", "kind": "test", "rep": 1, "scenario": scenario}
@@ -182,7 +231,8 @@ assert result == "valid" and meta["status"] == "valid" and meta["reason"] is Non
 order = [e if isinstance(e, str) else e[0] for e in log]
 assert order == ["refresh", "setup", "pf-open", "gate", "pf-close", "sleep", "prom", "state", "pf-open", "jaeger", "pf-close", "cleanup"]  # gate after the injection
 assert log[1][2] == 900 + 120 and log[1][3] == 900  # the settle counts in the setup timeout; fault duration of the scenario
-assert meta["schedule"] == log[1][4] == c.make_schedule("7:test/pod_failure_hotel_res__r1", 720, 60, [10, 30])
+assert meta["schedule"] == log[1][4] == c.make_schedule("7:test/pod_failure_hotel_res__r1", 720, (60, 60), [10, 30], [0])
+assert meta["split"] == "test" and meta["rates"] == [10, 30] and meta["images"] == ["img"] and meta["missing_logs"] == {}
 sleep = next(e for e in log if isinstance(e, tuple) and e[0] == "sleep")
 assert sleep[1] == 0.0  # the fake clock is already past t_injected + observe: nothing more to wait
 assert meta["versions"]["aiopslab"]["sha"] == "abc" and meta["run_meta"]["t_inject"] == 4130.0 and meta["target"] == "user"
@@ -195,8 +245,13 @@ assert log_sleep == [4136.0 + 600 - 4200.0]  # observation counted from the end 
 
 d, log = deps(now=lambda: 4200.0, sleep=lambda s: log_sleep.append(s))
 log_sleep.clear()
-attempt(d, {**run, "kind": "clean", "id": "clean/noop__r1"})
+_, meta, _ = attempt(d, {**run, "kind": "clean", "id": "clean/noop__r1"})
 assert log_sleep == [4136.0 + 1200 - 4200.0]  # a clean session has its own, longer observation
+assert meta["split"] == "train" and meta["rates"] == [10, 30]
+
+d, log = deps()
+_, meta, _ = attempt(d, {**run, "kind": "clean", "id": "clean/noop__r12", "rep": 12})
+assert meta["split"] == "test-unseen" and meta["rates"] == [20] and meta["schedule"].split(":")[1] == "20"  # load never seen in training
 
 d, log = deps(gate=lambda s: {"C10": "only 134 B/s at frontend"})
 result, meta, _ = attempt(d)

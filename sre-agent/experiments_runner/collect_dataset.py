@@ -1,7 +1,7 @@
 """Collect the raw dataset of the anomaly detector: clean sessions and fault runs, one fresh kind cluster each, no agent.
 
 Run from sre-agent/ (settle, segments and rates come from the pilot):
-  poetry run python -m experiments_runner.collect_dataset --app hotel --out /path/to/datasets/raw --rates 10,30 --dry-run
+  poetry run python -m experiments_runner.collect_dataset --app hotel --out /path/to/datasets/raw --rates 10,30,60 --rates-unseen 20,45 --dry-run
 
 Each attempt is saved under <out>/<app>/<kind>/<scenario>__r<rep>/attempt-<n>/ and is complete when its meta.json exists.
 Nothing here interprets the data: the builder in the MCP repo (anomaly/build.py) reads these files.
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 APPS = {"hotel": "Hotel Reservation", "social": "Social Network"}
 # Audit A9: pod kill is the same fault as pod failure, redeploy without PV is a noop with target = namespace
 EXCLUDED = {"pod_kill_hotel_res.json", "redeploy_without_PV_hotel_res.json"}
-REQUIRED_AIOPSLAB_COMMIT = "93f09c7"  # continuous workload, settle, run meta, dev_chaos
+REQUIRED_AIOPSLAB_COMMIT = "4bc5369"  # continuous workload, settle, run meta, dev_chaos, request mixes, Social graph, fork scripts
 WRK2_POD = 'namespace="default",pod=~"wrk2-job.*"'
 EXTRA_SERIES = {  # outside the app namespace: is the host or the load generator saturated?
     "extra_node_cpu": "node_cpu_seconds_total",
@@ -36,16 +36,41 @@ EXTRA_SERIES = {  # outside the app namespace: is the host or the load generator
     "extra_up": "up",
     "extra_wrk2": '{__name__=~"container_(cpu_usage_seconds_total|memory_working_set_bytes|network_receive_bytes_total|network_transmit_bytes_total)",%s}' % WRK2_POD,
 }
-JAEGER_BLOCK_S = 300
+# Jaeger returns the newest traces of a block first: short blocks spread the kept ones over the whole session
+JAEGER_BLOCK_S = 30
 # ponytail: Hotel traces 100% of the requests, so each block keeps at most this many (5 traces/s); raise it if F8 needs more
-JAEGER_TRACES_PER_BLOCK = 1500
+JAEGER_TRACES_PER_BLOCK = 150
 SETUP_S = 410  # measured on 2026-11-03, cluster to fault without settle; only for the --dry-run estimate
+SOCIAL_GRAPH = "socfb-Reed98"  # users and follows loaded after the deploy; the wrk2 scripts assume its 962 users
+MIXES = {"hotel": 4, "social": 3}  # request mixes defined in each app's wrk2 script (WRK_MIX)
 
 
-def make_schedule(key, total_s, segment_s, rates):
-    """Rate of each segment, drawn from `key`: a run always gets the same load, different runs a different one."""
+def make_schedule(key, total_s, segment_s, rates, mixes=(0,)):
+    """Duration, rate and request mix of each segment, drawn from `key`: a run always gets the same load, different runs a different one.
+
+    Durations are random within `segment_s` (min, max): the injection falls at a random point of a segment,
+    so a load change is not tied to the fault, and the model sees no fixed period.
+    """
     rng = random.Random(key)
-    return ",".join(f"{segment_s}:{rng.choice(rates)}" for _ in range(math.ceil(total_s / segment_s)))
+    segments, covered = [], 0
+    while covered < total_s:
+        seconds = rng.randint(*segment_s)
+        segments.append(f"{seconds}:{rng.choice(rates)}:{rng.choice(mixes)}")
+        covered += seconds
+    return ",".join(segments)
+
+
+def clean_split(rep, split, unseen):
+    """Split of clean session `rep`, fixed before collecting: train, val, then test.
+
+    The last `unseen` test sessions draw their rates from levels never used in training.
+    """
+    train, val, test = split
+    if rep <= train:
+        return "train"
+    if rep <= train + val:
+        return "val"
+    return "test-unseen" if rep > train + val + test - unseen else "test"
 
 
 def build_plan(app, scenarios, dev_scenarios, clean, reps, dev_reps, seed):
@@ -70,6 +95,8 @@ def scenario_env(scenario, schedule, settle_s, connections, run_meta_path):
         "AIOPSLAB_CHAOS_MESH_ALWAYS": "1",
         "AIOPSLAB_RUN_META": str(run_meta_path),
     }
+    if scenario.get("scenario") == APPS["social"]:
+        env["AIOPSLAB_SOCIAL_GRAPH"] = SOCIAL_GRAPH
     for key, value in (scenario.get("env_variables") or {}).items():
         env[key] = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
     return env
@@ -156,25 +183,36 @@ def export_jaeger(jaeger_get, service, start, end, out):
 
 
 def export_cluster_state(kubectl, namespace, out):
-    """Events, pods and logs; returns the images in use. --previous, because a restart hides the log of the crash."""
+    """Events, pods and logs; returns the images in use and the logs kubectl could not give.
+
+    --previous, because a restart hides the log of the crash. A pod that never started (Pending) has no log:
+    that must not cost the logs of the other pods.
+    """
     out = Path(out)
     for name, args in (("events", ["get", "events"]), ("deployments", ["get", "deployments"]),
                        ("chaos", ["get", "podchaos,networkchaos,stresschaos"])):
         write_gz(out / f"{name}.json.gz", kubectl([*args, "-n", namespace, "-o", "json"]))
     raw = kubectl(["get", "pods", "-n", namespace, "-o", "json"])
     write_gz(out / "pods.json.gz", raw)
-    images = set()
+    images, missing = set(), {}
+
+    def save_log(args, path):
+        try:
+            write_gz(path, kubectl(args))
+        except subprocess.CalledProcessError as e:
+            missing[path.name] = (e.stderr or "").strip()[:200]
+
     for pod in json.loads(raw)["items"]:
         name = pod["metadata"]["name"]
         restarts = {c["name"]: c.get("restartCount", 0) for c in pod["status"].get("containerStatuses", [])}
         for container in pod["spec"]["containers"]:
             images.add(container["image"])
             log_args = ["logs", name, "-n", namespace, "-c", container["name"], "--timestamps"]
-            write_gz(out / "logs" / f"{name}__{container['name']}.log.gz", kubectl(log_args))
+            save_log(log_args, out / "logs" / f"{name}__{container['name']}.log.gz")
             if restarts.get(container["name"]):
-                write_gz(out / "logs" / f"{name}__{container['name']}.previous.log.gz", kubectl([*log_args, "--previous"]))
-    write_gz(out / "logs" / "wrk2.log.gz", kubectl(["logs", "job/wrk2-job", "-n", "default"]))  # real start of each load segment
-    return sorted(images)
+                save_log([*log_args, "--previous"], out / "logs" / f"{name}__{container['name']}.previous.log.gz")
+    save_log(["logs", "job/wrk2-job", "-n", "default"], out / "logs" / "wrk2.log.gz")  # real start, rate and mix of each load segment
+    return sorted(images), missing
 
 
 def git_state(path):
@@ -197,11 +235,15 @@ def run_once(run, attempt_dir, args, deps):
     scenario, attempt_dir = run["scenario"], Path(attempt_dir)
     namespace = scenario["target_namespace"]
     observe_s = args.observe_clean if run["kind"] == "clean" else args.observe
-    schedule = make_schedule(f"{args.seed}:{run['id']}", args.settle + observe_s + deps.margin_s, args.segment, args.rates)
+    split = clean_split(run["rep"], args.split, args.unseen_sessions) if run["kind"] == "clean" else run["kind"]
+    rates = args.rates_unseen if split == "test-unseen" else args.rates
+    schedule = make_schedule(f"{args.seed}:{run['id']}", args.settle + observe_s + deps.margin_s, args.segment, rates, args.mixes)
     run_meta_path = attempt_dir / "run.json"
-    meta = {"id": run["id"], "kind": run["kind"], "rep": run["rep"], "attempt": attempt_dir.name, "app_scenario": scenario.get("scenario"),
+    meta = {"id": run["id"], "kind": run["kind"], "rep": run["rep"], "split": split, "attempt": attempt_dir.name,
+            "app_scenario": scenario.get("scenario"),
             "fault_type": scenario.get("fault_type"), "aiopslab_command": scenario["aiopslab_command"], "namespace": namespace,
             "target": scenario.get("target"), "accepted_targets": scenario.get("accepted_targets"), "seed": args.seed, "schedule": schedule,
+            "rates": rates, "mixes": args.mixes,
             "settle_s": args.settle, "observe_s": observe_s, "connections": args.connections, "versions": deps.provenance(),
             "t_start": deps.now(), "gate_failures": {}, "export_errors": {}, "status": "invalid", "reason": None}
     with patched_env(scenario_env(scenario, schedule, args.settle, args.connections, run_meta_path)):
@@ -227,7 +269,7 @@ def run_once(run, attempt_dir, args, deps):
                 meta["export_errors"]["prometheus"] = repr(e)
                 meta["reason"] = meta["reason"] or "Prometheus export failed"
             try:
-                meta["images"] = deps.export_cluster_state(namespace, attempt_dir)
+                meta["images"], meta["missing_logs"] = deps.export_cluster_state(namespace, attempt_dir)
             except Exception as e:
                 meta["export_errors"]["cluster_state"] = repr(e)
             try:
@@ -305,10 +347,16 @@ def real_deps():
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--app", required=True, choices=APPS)
-    p.add_argument("--out", required=True, type=Path, help="outside the repo: the data does not belong in git")
-    p.add_argument("--rates", required=True, type=lambda v: [int(r) for r in v.split(",")], help="requests/s the segments draw from")
+    ints = lambda v: [int(r) for r in v.split(",")]
+    # absolute: AIOpsLab writes run.json from its own working directory
+    p.add_argument("--out", required=True, type=lambda v: Path(v).resolve(), help="outside the repo: the data does not belong in git")
+    p.add_argument("--rates", required=True, type=ints, help="requests/s the segments draw from")
+    p.add_argument("--rates-unseen", type=ints, help="requests/s of the last --unseen-sessions clean test sessions, absent from --rates")
+    p.add_argument("--mixes", type=ints, help="request mixes the segments draw from (indices into the wrk2 script's mixes); default all")
     p.add_argument("--settle", type=int, default=300, help="seconds under load before the injection")
-    p.add_argument("--segment", type=int, default=300, help="seconds of a load segment")
+    p.add_argument("--segment", type=int, nargs=2, default=[120, 480], metavar=("MIN", "MAX"), help="seconds of a load segment, drawn per segment")
+    p.add_argument("--split", type=ints, default=[6, 2, 4], help="clean sessions for train, val and test, assigned by repetition number")
+    p.add_argument("--unseen-sessions", type=int, default=2, help="last clean test sessions that use --rates-unseen")
     p.add_argument("--observe", type=int, default=900, help="seconds observed after the injection in test and dev runs")
     p.add_argument("--observe-clean", type=int, default=5400, help="seconds observed in a clean session")
     p.add_argument("--connections", type=int, default=4)
@@ -319,7 +367,16 @@ def parse_args(argv=None):
     p.add_argument("--max-attempts", type=int, default=3)
     p.add_argument("--only", help="keep only the runs whose id contains this text")
     p.add_argument("--dry-run", action="store_true", help="print the plan and the machine time, then exit")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    args.mixes = args.mixes or list(range(MIXES[args.app]))
+    if max(args.mixes) >= MIXES[args.app] or min(args.mixes) < 0:
+        p.error(f"--mixes: the {args.app} wrk2 script has mixes 0..{MIXES[args.app] - 1}")
+    if len(args.split) != 3 or args.clean > sum(args.split):
+        p.error("--split needs train,val,test with at least --clean sessions in all")
+    unseen = [r for r in range(1, args.clean + 1) if clean_split(r, args.split, args.unseen_sessions) == "test-unseen"]
+    if unseen and (not args.rates_unseen or set(args.rates_unseen) & set(args.rates)):
+        p.error(f"clean sessions {unseen} need --rates-unseen, with no level in common with --rates")
+    return args
 
 
 def main(argv=None):
