@@ -98,7 +98,7 @@ assert env["AIOPSLAB_SETTLE_S"] == "120" and env["AIOPSLAB_WORKLOAD_SCHEDULE"] =
 assert env["AIOPSLAB_RUN_META"] == "/m/run.json" and env["AIOPSLAB_WORKLOAD_CONNECTIONS"] == "4"
 assert "AIOPSLAB_SOCIAL_GRAPH" not in env  # only Social has a graph to load
 social_env = c.scenario_env({"target_namespace": "ns", "scenario": S}, "300:10", 120, 4, "/m")
-assert social_env["AIOPSLAB_SOCIAL_GRAPH"] == "socfb-Reed98" and social_env["AIOPSLAB_SOCIAL_SAMPLING"] == "1.0"
+assert social_env["AIOPSLAB_SOCIAL_GRAPH"] == "socfb-Reed98" and social_env["AIOPSLAB_SOCIAL_SAMPLING"] == "0.6"
 assert "AIOPSLAB_SOCIAL_SAMPLING" not in env  # Hotel traces every request already
 os.environ["JAEGER_URL"] = "before"
 os.environ.pop("AIOPSLAB_DEV_CHAOS", None)

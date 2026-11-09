@@ -40,7 +40,7 @@ EXTRA_SERIES = {  # outside the app namespace: is the host or the load generator
 # A block that reaches the limit lost its oldest traces, and meta.json counts such blocks.
 JAEGER_BLOCK_S = 10
 JAEGER_TRACES_PER_BLOCK = 5000
-SOCIAL_SAMPLING = 1.0  # share of Social requests traced (the chart's default is 0.01); Hotel already traces all of them
+SOCIAL_SAMPLING = 0.6  # share of Social requests traced (the chart's default is 0.01); Hotel traces all of them, its own default
 SETUP_S = 410  # measured on 2026-11-03, cluster to fault without settle; only for the --dry-run estimate
 SOCIAL_GRAPH = "socfb-Reed98"  # users and follows loaded after the deploy; the wrk2 scripts assume its 962 users
 MIXES = {"hotel": 4, "social": 3}  # request mixes defined in each app's wrk2 script (WRK_MIX)
@@ -380,7 +380,9 @@ def parse_args(argv=None):
     p.add_argument("--unseen-sessions", type=int, default=2, help="last clean test sessions that use --rates-unseen")
     p.add_argument("--observe", type=int, default=900, help="seconds observed after the injection in test and dev runs")
     p.add_argument("--observe-clean", type=int, default=5400, help="seconds observed in a clean session")
-    p.add_argument("--connections", type=int, default=4)
+    p.add_argument("--connections", type=int, default=128,
+                   help="wrk2 connections; each holds one request in flight, so wrk2 sends at most connections/latency requests/s: "
+                        "128 keep the load at 160 req/s up to 0.8 s of latency. wrk2's timeout count is wrong with idle connections")
     p.add_argument("--clean", type=int, default=12, help="clean sessions")
     p.add_argument("--reps", type=int, default=5, help="repetitions of each test scenario")
     p.add_argument("--dev-reps", type=int, default=2, help="repetitions of each dev scenario")
