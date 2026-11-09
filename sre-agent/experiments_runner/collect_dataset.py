@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 APPS = {"hotel": "Hotel Reservation", "social": "Social Network"}
 # Audit A9: pod kill is the same fault as pod failure, redeploy without PV is a noop with target = namespace
 EXCLUDED = {"pod_kill_hotel_res.json", "redeploy_without_PV_hotel_res.json"}
-REQUIRED_AIOPSLAB_COMMIT = "4bc5369"  # continuous workload, settle, run meta, dev_chaos, request mixes, Social graph, fork scripts
+REQUIRED_AIOPSLAB_COMMIT = "7f78640"  # continuous workload, settle, run meta, dev_chaos, request mixes, Social graph and sampling, kind logs and events
 WRK2_POD = 'namespace="default",pod=~"wrk2-job.*"'
 EXTRA_SERIES = {  # outside the app namespace: is the host or the load generator saturated?
     "extra_node_cpu": "node_cpu_seconds_total",
@@ -36,27 +36,37 @@ EXTRA_SERIES = {  # outside the app namespace: is the host or the load generator
     "extra_up": "up",
     "extra_wrk2": '{__name__=~"container_(cpu_usage_seconds_total|memory_working_set_bytes|network_receive_bytes_total|network_transmit_bytes_total)",%s}' % WRK2_POD,
 }
-# Jaeger returns the newest traces of a block first: short blocks spread the kept ones over the whole session
-JAEGER_BLOCK_S = 30
-# ponytail: Hotel traces 100% of the requests, so each block keeps at most this many (5 traces/s); raise it if F8 needs more
-JAEGER_TRACES_PER_BLOCK = 150
+# Every trace is kept: 10 s blocks under this limit hold up to 500 traces/s, against 240 req/s at most.
+# A block that reaches the limit lost its oldest traces, and meta.json counts such blocks.
+JAEGER_BLOCK_S = 10
+JAEGER_TRACES_PER_BLOCK = 5000
+SOCIAL_SAMPLING = 1.0  # share of Social requests traced (the chart's default is 0.01); Hotel already traces all of them
 SETUP_S = 410  # measured on 2026-11-03, cluster to fault without settle; only for the --dry-run estimate
 SOCIAL_GRAPH = "socfb-Reed98"  # users and follows loaded after the deploy; the wrk2 scripts assume its 962 users
 MIXES = {"hotel": 4, "social": 3}  # request mixes defined in each app's wrk2 script (WRK_MIX)
 
 
-def make_schedule(key, total_s, segment_s, rates, mixes=(0,)):
+def make_schedule(key, total_s, segment_s, rates, mixes=(0,), ramp_share=0.0, ramp_step=30):
     """Duration, rate and request mix of each segment, drawn from `key`: a run always gets the same load, different runs a different one.
 
     Durations are random within `segment_s` (min, max): the injection falls at a random point of a segment,
     so a load change is not tied to the fault, and the model sees no fixed period.
+    A share `ramp_share` of the rate changes becomes a ramp of 2 to 6 steps of `ramp_step` seconds, spaced geometrically:
+    real traffic also changes gradually, not only in steps.
     """
     rng = random.Random(key)
-    segments, covered = [], 0
+    segments, covered, previous = [], 0, None
     while covered < total_s:
+        rate, mix = rng.choice(rates), rng.choice(mixes)
+        if previous is not None and rate != previous and rng.random() < ramp_share:
+            steps = rng.randint(2, 6)
+            for k in range(1, steps + 1):
+                segments.append(f"{ramp_step}:{round(previous * (rate / previous) ** (k / (steps + 1)))}:{mix}")
+                covered += ramp_step
         seconds = rng.randint(*segment_s)
-        segments.append(f"{seconds}:{rng.choice(rates)}:{rng.choice(mixes)}")
+        segments.append(f"{seconds}:{rate}:{mix}")
         covered += seconds
+        previous = rate
     return ",".join(segments)
 
 
@@ -97,6 +107,7 @@ def scenario_env(scenario, schedule, settle_s, connections, run_meta_path):
     }
     if scenario.get("scenario") == APPS["social"]:
         env["AIOPSLAB_SOCIAL_GRAPH"] = SOCIAL_GRAPH
+        env["AIOPSLAB_SOCIAL_SAMPLING"] = str(SOCIAL_SAMPLING)
     for key, value in (scenario.get("env_variables") or {}).items():
         env[key] = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
     return env
@@ -173,13 +184,19 @@ def jaeger_blocks(start, end, step=JAEGER_BLOCK_S):
 
 
 def export_jaeger(jaeger_get, service, start, end, out):
-    """Block by block: one request for all the traces of a session can be too much for the API."""
-    total = 0
+    """Block by block: one request for all the traces of a session can be too much for the API.
+
+    Returns the traces written, the start of each block that reached the limit (traces lost there) and the seconds it took.
+    Blocks are listed by time: a full block during the deploy (Social's graph load) is setup traffic, one under load is data lost.
+    """
+    total, full, began = 0, [], time.time()
     for block_start, block_end in jaeger_blocks(start, end):
         traces = jaeger_get({"service": service, "start": block_start * 10**6, "end": block_end * 10**6, "limit": JAEGER_TRACES_PER_BLOCK})
         write_gz(Path(out) / "jaeger" / f"{block_start}.json.gz", traces)
         total += len(traces)
-    return total
+        if len(traces) >= JAEGER_TRACES_PER_BLOCK:
+            full.append(block_start)
+    return {"traces": total, "full_blocks": full, "seconds": round(time.time() - began, 1)}
 
 
 def export_cluster_state(kubectl, namespace, out):
@@ -237,13 +254,15 @@ def run_once(run, attempt_dir, args, deps):
     observe_s = args.observe_clean if run["kind"] == "clean" else args.observe
     split = clean_split(run["rep"], args.split, args.unseen_sessions) if run["kind"] == "clean" else run["kind"]
     rates = args.rates_unseen if split == "test-unseen" else args.rates
-    schedule = make_schedule(f"{args.seed}:{run['id']}", args.settle + observe_s + deps.margin_s, args.segment, rates, args.mixes)
+    schedule = make_schedule(f"{args.seed}:{run['id']}", args.settle + observe_s + deps.margin_s, args.segment, rates, args.mixes,
+                             args.ramp_share)
     run_meta_path = attempt_dir / "run.json"
     meta = {"id": run["id"], "kind": run["kind"], "rep": run["rep"], "split": split, "attempt": attempt_dir.name,
             "app_scenario": scenario.get("scenario"),
             "fault_type": scenario.get("fault_type"), "aiopslab_command": scenario["aiopslab_command"], "namespace": namespace,
             "target": scenario.get("target"), "accepted_targets": scenario.get("accepted_targets"), "seed": args.seed, "schedule": schedule,
-            "rates": rates, "mixes": args.mixes,
+            "rates": rates, "mixes": args.mixes, "ramp_share": args.ramp_share,
+            "trace_sampling": SOCIAL_SAMPLING if scenario.get("scenario") == APPS["social"] else 1.0,
             "settle_s": args.settle, "observe_s": observe_s, "connections": args.connections, "versions": deps.provenance(),
             "t_start": deps.now(), "gate_failures": {}, "export_errors": {}, "status": "invalid", "reason": None}
     with patched_env(scenario_env(scenario, schedule, args.settle, args.connections, run_meta_path)):
@@ -274,7 +293,8 @@ def run_once(run, attempt_dir, args, deps):
                 meta["export_errors"]["cluster_state"] = repr(e)
             try:
                 with deps.port_forward(scenario):  # opened again: nothing needs Jaeger during the observation
-                    meta["traces"] = deps.export_jaeger(scenario.get("service_starting_point") or "frontend", start, end, attempt_dir)
+                    jaeger = deps.export_jaeger(scenario.get("service_starting_point") or "frontend", start, end, attempt_dir)
+                meta.update(traces=jaeger["traces"], jaeger_full_blocks=jaeger["full_blocks"], jaeger_export_s=jaeger["seconds"])
             except Exception as e:  # traces only serve later phases: recorded, but the run stays valid
                 meta["export_errors"]["jaeger"] = repr(e)
             meta["status"] = "invalid" if meta["reason"] else "valid"
@@ -355,6 +375,7 @@ def parse_args(argv=None):
     p.add_argument("--mixes", type=ints, help="request mixes the segments draw from (indices into the wrk2 script's mixes); default all")
     p.add_argument("--settle", type=int, default=300, help="seconds under load before the injection")
     p.add_argument("--segment", type=int, nargs=2, default=[120, 480], metavar=("MIN", "MAX"), help="seconds of a load segment, drawn per segment")
+    p.add_argument("--ramp-share", type=float, default=0.5, help="share of the rate changes made as a ramp of 30 s steps")
     p.add_argument("--split", type=ints, default=[6, 2, 4], help="clean sessions for train, val and test, assigned by repetition number")
     p.add_argument("--unseen-sessions", type=int, default=2, help="last clean test sessions that use --rates-unseen")
     p.add_argument("--observe", type=int, default=900, help="seconds observed after the injection in test and dev runs")

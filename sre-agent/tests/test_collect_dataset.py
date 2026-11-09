@@ -19,6 +19,19 @@ assert len({d for d, _, _ in segments}) > 1  # no fixed period
 many = {c.make_schedule(f"k{i}", 3000, (120, 480), [10, 30, 50]) for i in range(20)}
 assert len(many) == 20
 
+# Ramps: a rate change becomes 2-6 steps of 30 s spaced geometrically between the two levels, always moving towards the new one
+ramped = [[int(v) for v in s.split(":")] for s in c.make_schedule("r", 6000, (120, 480), [10, 160], ramp_share=1.0).split(",")]
+levels = [i for i, (d, r, _) in enumerate(ramped) if r in (10, 160) and d != 30]
+for a, b in zip(levels, levels[1:]):
+    if ramped[a][1] == ramped[b][1]:
+        assert b == a + 1  # same rate twice: nothing to ramp
+        continue
+    steps = [r for d, r, _ in ramped[a + 1:b]]
+    assert all(d == 30 for d, _, _ in ramped[a + 1:b]) and 2 <= len(steps) <= 6, ramped[a:b + 1]
+    lo, hi = sorted((ramped[a][1], ramped[b][1]))
+    assert all(lo < r < hi for r in steps) and steps == sorted(steps, reverse=ramped[a][1] > ramped[b][1])
+assert c.make_schedule("r", 6000, (120, 480), [10, 160]) == c.make_schedule("r", 6000, (120, 480), [10, 160], ramp_share=0.0)
+
 
 def gap_to_injection(schedule, settle=300):
     """Seconds between the injection and the nearest load change of a run."""
@@ -84,7 +97,9 @@ assert json.loads(env["AIOPSLAB_DEV_CHAOS"]) == chaos and env["JAEGER_URL"] == "
 assert env["AIOPSLAB_SETTLE_S"] == "120" and env["AIOPSLAB_WORKLOAD_SCHEDULE"] == "300:10" and env["AIOPSLAB_CHAOS_MESH_ALWAYS"] == "1"
 assert env["AIOPSLAB_RUN_META"] == "/m/run.json" and env["AIOPSLAB_WORKLOAD_CONNECTIONS"] == "4"
 assert "AIOPSLAB_SOCIAL_GRAPH" not in env  # only Social has a graph to load
-assert c.scenario_env({"target_namespace": "ns", "scenario": S}, "300:10", 120, 4, "/m")["AIOPSLAB_SOCIAL_GRAPH"] == "socfb-Reed98"
+social_env = c.scenario_env({"target_namespace": "ns", "scenario": S}, "300:10", 120, 4, "/m")
+assert social_env["AIOPSLAB_SOCIAL_GRAPH"] == "socfb-Reed98" and social_env["AIOPSLAB_SOCIAL_SAMPLING"] == "1.0"
+assert "AIOPSLAB_SOCIAL_SAMPLING" not in env  # Hotel traces every request already
 os.environ["JAEGER_URL"] = "before"
 os.environ.pop("AIOPSLAB_DEV_CHAOS", None)
 try:
@@ -154,9 +169,13 @@ except RuntimeError:
 # --- traces: blocks that cover the whole window, each one capped
 assert c.jaeger_blocks(0, 700, 300) == [(0, 300), (300, 600), (600, 700)]
 seen = []
-total = c.export_jaeger(lambda p: seen.append(p) or [{"traceID": "t"}], "frontend", 1000, 1700, out)
-assert total == 24 and seen[0] == {"service": "frontend", "start": 1000 * 10**6, "end": 1030 * 10**6, "limit": c.JAEGER_TRACES_PER_BLOCK}
+result = c.export_jaeger(lambda p: seen.append(p) or [{"traceID": "t"}], "frontend", 1000, 1700, out)
+assert result["traces"] == 70 and result["full_blocks"] == [] and result["seconds"] >= 0
+assert seen[0] == {"service": "frontend", "start": 1000 * 10**6, "end": 1010 * 10**6, "limit": c.JAEGER_TRACES_PER_BLOCK}
 assert (out / "jaeger/1000.json.gz").exists() and (out / "jaeger/1690.json.gz").exists()
+# A block that reaches the limit has lost traces: it is counted
+full = c.export_jaeger(lambda p: [{"traceID": "t"}] * (c.JAEGER_TRACES_PER_BLOCK if p["start"] == 1000 * 10**6 else 3), "frontend", 1000, 1020, out)
+assert full["full_blocks"] == [1000] and full["traces"] == c.JAEGER_TRACES_PER_BLOCK + 3
 
 # --- cluster state: logs of every container, --previous only after a restart, wrk2 included
 pods = {"items": [{"metadata": {"name": "geo-1"}, "spec": {"containers": [{"name": "geo", "image": "img:1"}]},
@@ -208,11 +227,11 @@ def deps(**kw):
                 refresh_config=lambda: log.append("refresh"), provenance=lambda: {"aiopslab": {"sha": "abc"}}, setup=setup,
                 cleanup=lambda: log.append("cleanup"), gate=lambda s: log.append("gate") or {}, port_forward=port_forward,
                 export_prometheus=lambda *a: log.append("prom") or {"container_threads": 1}, export_cluster_state=lambda *a: log.append("state") or (["img"], {}),
-                export_jaeger=lambda *a: log.append("jaeger") or 5)
+                export_jaeger=lambda *a: log.append("jaeger") or {"traces": 5, "full_blocks": [], "seconds": 0.1})
     return NS(**{**base, **kw}), log
 
 
-args = NS(settle=120, segment=(60, 60), rates=[10, 30], rates_unseen=[20], mixes=[0], split=[6, 2, 4], unseen_sessions=2,
+args = NS(settle=120, segment=(60, 60), rates=[10, 30], rates_unseen=[20], mixes=[0], ramp_share=0.0, split=[6, 2, 4], unseen_sessions=2,
           observe=600, observe_clean=1200, connections=4, seed=7)
 scenario = {"aiopslab_command": "pod_failure_hotel_res-detection-1", "target_namespace": "ns", "service_starting_point": "frontend",
             "scenario": H, "fault_type": "Pod failure", "target": "user", "accepted_targets": None, "fault_duration": 900}
@@ -233,6 +252,7 @@ assert order == ["refresh", "setup", "pf-open", "gate", "pf-close", "sleep", "pr
 assert log[1][2] == 900 + 120 and log[1][3] == 900  # the settle counts in the setup timeout; fault duration of the scenario
 assert meta["schedule"] == log[1][4] == c.make_schedule("7:test/pod_failure_hotel_res__r1", 720, (60, 60), [10, 30], [0])
 assert meta["split"] == "test" and meta["rates"] == [10, 30] and meta["images"] == ["img"] and meta["missing_logs"] == {}
+assert meta["traces"] == 5 and meta["jaeger_full_blocks"] == [] and meta["trace_sampling"] == 1.0
 sleep = next(e for e in log if isinstance(e, tuple) and e[0] == "sleep")
 assert sleep[1] == 0.0  # the fake clock is already past t_injected + observe: nothing more to wait
 assert meta["versions"]["aiopslab"]["sha"] == "abc" and meta["run_meta"]["t_inject"] == 4130.0 and meta["target"] == "user"
