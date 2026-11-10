@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 APPS = {"hotel": "Hotel Reservation", "social": "Social Network"}
 # Audit A9: pod kill is the same fault as pod failure, redeploy without PV is a noop with target = namespace
 EXCLUDED = {"pod_kill_hotel_res.json", "redeploy_without_PV_hotel_res.json"}
-REQUIRED_AIOPSLAB_COMMIT = "7f78640"  # continuous workload, settle, run meta, dev_chaos, request mixes, Social graph and sampling, kind logs and events
+REQUIRED_AIOPSLAB_COMMIT = "6bba8e1"  # continuous workload, settle, run meta, dev_chaos, request mixes, Social graph and sampling, kind logs and events, etcd on tmpfs
 WRK2_POD = 'namespace="default",pod=~"wrk2-job.*"'
 EXTRA_SERIES = {  # outside the app namespace: is the host or the load generator saturated?
     "extra_node_cpu": "node_cpu_seconds_total",
@@ -42,6 +42,8 @@ JAEGER_BLOCK_S = 10
 JAEGER_TRACES_PER_BLOCK = 5000
 SOCIAL_SAMPLING = 0.6  # share of Social requests traced (the chart's default is 0.01); Hotel traces all of them, its own default
 SETUP_S = 410  # measured on 2026-11-03, cluster to fault without settle; only for the --dry-run estimate
+# Longest wait for AIOpsLab to deploy and inject, settle excluded: the app deploy alone may take up to 900 s on a slow disk
+SETUP_TIMEOUT_S = 1500
 SOCIAL_GRAPH = "socfb-Reed98"  # users and follows loaded after the deploy; the wrk2 scripts assume its 962 users
 MIXES = {"hotel": 4, "social": 3}  # request mixes defined in each app's wrk2 script (WRK_MIX)
 
@@ -268,7 +270,7 @@ def run_once(run, attempt_dir, args, deps):
     with patched_env(scenario_env(scenario, schedule, args.settle, args.connections, run_meta_path)):
         deps.refresh_config()
         try:
-            ok = deps.setup(problem_id=scenario["aiopslab_command"], setup_timeout=int(scenario.get("setup_timeout", 900)) + args.settle,
+            ok = deps.setup(problem_id=scenario["aiopslab_command"], setup_timeout=int(scenario.get("setup_timeout", SETUP_TIMEOUT_S)) + args.settle,
                             fault_duration=scenario.get("fault_duration"))
             if not ok:
                 meta["reason"] = "setup failed"

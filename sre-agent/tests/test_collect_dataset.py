@@ -249,7 +249,7 @@ result, meta, _ = attempt(d)
 assert result == "valid" and meta["status"] == "valid" and meta["reason"] is None and meta["series"] == {"container_threads": 1}
 order = [e if isinstance(e, str) else e[0] for e in log]
 assert order == ["refresh", "setup", "pf-open", "gate", "pf-close", "sleep", "prom", "state", "pf-open", "jaeger", "pf-close", "cleanup"]  # gate after the injection
-assert log[1][2] == 900 + 120 and log[1][3] == 900  # the settle counts in the setup timeout; fault duration of the scenario
+assert log[1][2] == 1500 + 120 and log[1][3] == 900  # the settle counts in the setup timeout; fault duration of the scenario
 assert meta["schedule"] == log[1][4] == c.make_schedule("7:test/pod_failure_hotel_res__r1", 720, (60, 60), [10, 30], [0])
 assert meta["split"] == "test" and meta["rates"] == [10, 30] and meta["images"] == ["img"] and meta["missing_logs"] == {}
 assert meta["traces"] == 5 and meta["jaeger_full_blocks"] == [] and meta["trace_sampling"] == 1.0
