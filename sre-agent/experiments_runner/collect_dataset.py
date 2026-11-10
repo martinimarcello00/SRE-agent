@@ -46,30 +46,66 @@ SETUP_S = 410  # measured on 2026-11-03, cluster to fault without settle; only f
 SETUP_TIMEOUT_S = 1500
 SOCIAL_GRAPH = "socfb-Reed98"  # users and follows loaded after the deploy; the wrk2 scripts assume its 962 users
 MIXES = {"hotel": 4, "social": 3}  # request mixes defined in each app's wrk2 script (WRK_MIX)
+INJECT_HOLD_S = 60  # the assigned level lasts at least this long after the injection: the fault lands 6-10 s after it starts
 
 
-def make_schedule(key, total_s, segment_s, rates, mixes=(0,), ramp_share=0.0, ramp_step=30):
+def make_schedule(key, total_s, segment_s, rates, mixes=(0,), ramp_share=0.0, ramp_step=30, inject=None):
     """Duration, rate and request mix of each segment, drawn from `key`: a run always gets the same load, different runs a different one.
 
     Durations are random within `segment_s` (min, max): the injection falls at a random point of a segment,
     so a load change is not tied to the fault, and the model sees no fixed period.
     A share `ramp_share` of the rate changes becomes a ramp of 2 to 6 steps of `ramp_step` seconds, spaced geometrically:
     real traffic also changes gradually, not only in steps.
+    `inject` (second, rate): the segment around that second is steady at `rate` for at least INJECT_HOLD_S more,
+    so the fault starts at an assigned level. That segment takes the time of the ramp it replaces and may exceed `segment_s`.
+    Without `inject` the draws are the same as before it existed: schedules already collected stay reproducible.
     """
     rng = random.Random(key)
     segments, covered, previous = [], 0, None
     while covered < total_s:
         rate, mix = rng.choice(rates), rng.choice(mixes)
+        ramp = []
         if previous is not None and rate != previous and rng.random() < ramp_share:
             steps = rng.randint(2, 6)
-            for k in range(1, steps + 1):
-                segments.append(f"{ramp_step}:{round(previous * (rate / previous) ** (k / (steps + 1)))}:{mix}")
-                covered += ramp_step
+            ramp = [round(previous * (rate / previous) ** (k / (steps + 1))) for k in range(1, steps + 1)]
         seconds = rng.randint(*segment_s)
+        if inject and covered <= inject[0] < covered + ramp_step * len(ramp) + seconds:
+            seconds = max(ramp_step * len(ramp) + seconds, inject[0] + INJECT_HOLD_S - covered)
+            rate, ramp = inject[1], []
+        segments += [f"{ramp_step}:{r}:{mix}" for r in ramp]
         segments.append(f"{seconds}:{rate}:{mix}")
-        covered += seconds
+        covered += ramp_step * len(ramp) + seconds
         previous = rate
     return ",".join(segments)
+
+
+def rate_at(schedule, second):
+    """Requests/s that `schedule` asks for at `second` after the load starts."""
+    end = 0
+    for segment in schedule.split(","):
+        seconds, rate, _ = (int(v) for v in segment.split(":"))
+        end += seconds
+        if second < end:
+            return rate
+    return None
+
+
+def injection_level(run, kind_dir, rates, reps, settle_s, seed):
+    """Load level at the injection of a test or dev run: the reps of a scenario start their fault at different levels.
+
+    Valid reps keep the level they got (drawn at random before this existed); the pending ones share out the missing levels,
+    in an order shuffled per scenario, so no level is the one always left out.
+    """
+    stem = run["id"].split("/", 1)[1].rsplit("__r", 1)[0]
+    taken = {}
+    for meta_path in Path(kind_dir).glob(f"{stem}__r*/attempt-*/meta.json"):
+        meta = json.loads(meta_path.read_text())
+        if meta["status"] == "valid":
+            taken[meta["rep"]] = rate_at(meta["schedule"], meta["settle_s"])
+    missing = [r for r in rates if r not in taken.values()] or list(rates)
+    random.Random(f"{seed}:{stem}").shuffle(missing)
+    pending = [r for r in range(1, reps + 1) if r not in taken]
+    return missing[pending.index(run["rep"]) % len(missing)] if run["rep"] in pending else missing[0]
 
 
 def clean_split(rep, split, unseen):
@@ -256,10 +292,12 @@ def run_once(run, attempt_dir, args, deps):
     observe_s = args.observe_clean if run["kind"] == "clean" else args.observe
     split = clean_split(run["rep"], args.split, args.unseen_sessions) if run["kind"] == "clean" else run["kind"]
     rates = args.rates_unseen if split == "test-unseen" else args.rates
+    inject_rate = None if run["kind"] == "clean" else injection_level(
+        run, attempt_dir.parents[1], rates, args.reps if run["kind"] == "test" else args.dev_reps, args.settle, args.seed)
     schedule = make_schedule(f"{args.seed}:{run['id']}", args.settle + observe_s + deps.margin_s, args.segment, rates, args.mixes,
-                             args.ramp_share)
+                             args.ramp_share, inject=None if inject_rate is None else (args.settle, inject_rate))
     run_meta_path = attempt_dir / "run.json"
-    meta = {"id": run["id"], "kind": run["kind"], "rep": run["rep"], "split": split, "attempt": attempt_dir.name,
+    meta = {"id": run["id"], "kind": run["kind"], "rep": run["rep"], "split": split, "attempt": attempt_dir.name, "inject_rate": inject_rate,
             "app_scenario": scenario.get("scenario"),
             "fault_type": scenario.get("fault_type"), "aiopslab_command": scenario["aiopslab_command"], "namespace": namespace,
             "target": scenario.get("target"), "accepted_targets": scenario.get("accepted_targets"), "seed": args.seed, "schedule": schedule,

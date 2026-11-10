@@ -1,6 +1,7 @@
 # Run from sre-agent/: PYTHONPATH=.:experiments_runner poetry run python tests/test_collect_dataset.py  (no cluster needed)
 from contextlib import contextmanager
 import gzip
+import itertools
 import json
 import os
 from pathlib import Path
@@ -45,6 +46,34 @@ def gap_to_injection(schedule, settle=300):
 # With fixed 300 s segments and a 300 s settle every injection fell on a load change; now it falls anywhere in a segment
 gaps = [gap_to_injection(c.make_schedule(f"7:test/x__r{i}", 1500, (120, 480), [10])) for i in range(200)]
 assert 0.2 < sum(g < 60 for g in gaps) / len(gaps) < 0.6 and max(gaps) > 120
+
+# Schedules already collected (2026-11-10, meta.json of the full collection) must come out unchanged
+R, MIX = [10, 20, 40, 80, 160], [0, 1, 2, 3]
+assert c.make_schedule("0:clean/noop_hotel_res__r5", 300 + 5400 + 410, (120, 480), R, MIX, 0.5) == (
+    "300:160:1,423:80:1,186:80:1,30:59:1,30:44:1,30:33:1,30:24:1,30:18:1,30:13:1,432:10:1,30:13:3,30:16:3,30:20:3,30:25:3,30:32:3,"
+    "215:40:3,30:48:3,30:57:3,30:67:3,130:80:3,248:80:1,155:10:1,371:10:1,30:12:0,30:14:0,30:17:0,242:20:0,30:28:1,30:40:1,30:57:1,"
+    "30:80:1,30:113:1,335:160:1,130:10:2,30:25:1,30:63:1,134:160:1,30:63:0,30:25:0,137:10:0,30:11:2,30:12:2,30:13:2,30:15:2,30:16:2,"
+    "30:18:2,433:20:2,139:80:3,30:90:3,30:101:3,30:113:3,30:127:3,30:143:3,480:160:3,206:20:0,268:20:2,319:10:1")
+assert c.make_schedule("0:clean/noop_hotel_res__r12", 300 + 5400 + 410, (120, 480), [30, 60, 120, 240], MIX, 0.5).startswith(
+    "337:30:3,30:34:2,30:40:2,30:45:2,30:52:2,285:60:2,30:85:3,30:120:3,30:170:3,442:240:3,30:197:3,30:162:3,30:132:3,30:109:3,")
+assert c.make_schedule("0:test/network_delay_hotel_res__r1", 300 + 900 + 410, (120, 480), R, MIX, 0.5) == (
+    "374:80:2,414:160:2,30:113:0,30:80:0,30:57:0,239:40:0,30:34:2,30:28:2,30:24:2,352:20:2,30:25:0,30:32:0,371:40:0")
+assert c.rate_at("374:80:2,414:160:2", 300) == 80 and c.rate_at("374:80:2,414:160:2", 374) == 160 and c.rate_at("10:5:0", 10) is None
+
+# Assigned level at the injection: steady from the injection for at least INJECT_HOLD_S, then the load goes on from that level
+for i in range(300):
+    level = R[i % 5]
+    forced = c.make_schedule(f"0:test/x__r{i}", 1610, (120, 480), R, MIX, 0.5, inject=(300, level))
+    segs = [[int(v) for v in s.split(":")] for s in forced.split(",")]
+    assert all(c.rate_at(forced, t) == level for t in range(300, 300 + c.INJECT_HOLD_S)), (level, forced)
+    assert sum(d for d, _, _ in segs) >= 1610
+    k = next(j for j, t in enumerate(itertools.accumulate(d for d, _, _ in segs)) if t > 300)
+    assert segs[k][1] == level and segs[k][0] >= 120 and (k == 0 or segs[k - 1][0] >= 120)  # a step into it: its ramp time joined it
+    after = segs[k + 1:]
+    if after and after[0][0] == 30 and after[0][1] not in R:  # a ramp out of the assigned level starts from it
+        nxt = next(r for d, r, _ in after if d != 30 or r in R)
+        lo, hi = sorted((level, nxt))
+        assert lo < after[0][1] < hi, forced
 
 # --- clean sessions: split fixed by repetition number before collecting, the last two test sessions on unseen load levels
 assert [c.clean_split(r, [6, 2, 4], 2) for r in range(1, 13)] == ["train"] * 6 + ["val"] * 2 + ["test"] * 2 + ["test-unseen"] * 2
@@ -232,14 +261,15 @@ def deps(**kw):
 
 
 args = NS(settle=120, segment=(60, 60), rates=[10, 30], rates_unseen=[20], mixes=[0], ramp_share=0.0, split=[6, 2, 4], unseen_sessions=2,
-          observe=600, observe_clean=1200, connections=4, seed=7)
+          observe=600, observe_clean=1200, connections=4, seed=7, reps=5, dev_reps=2)
 scenario = {"aiopslab_command": "pod_failure_hotel_res-detection-1", "target_namespace": "ns", "service_starting_point": "frontend",
             "scenario": H, "fault_type": "Pod failure", "target": "user", "accepted_targets": None, "fault_duration": 900}
 run = {"id": "test/pod_failure_hotel_res__r1", "kind": "test", "rep": 1, "scenario": scenario}
 
 
 def attempt(d, r=run):
-    folder = Path(tempfile.mkdtemp())
+    folder = Path(tempfile.mkdtemp()) / r["id"] / "attempt-1"  # the layout of collect(): the level lookup reads the sibling reps
+    folder.mkdir(parents=True)
     result = c.run_once(r, folder, args, d)
     return result, json.loads((folder / "meta.json").read_text()), folder
 
@@ -250,7 +280,9 @@ assert result == "valid" and meta["status"] == "valid" and meta["reason"] is Non
 order = [e if isinstance(e, str) else e[0] for e in log]
 assert order == ["refresh", "setup", "pf-open", "gate", "pf-close", "sleep", "prom", "state", "pf-open", "jaeger", "pf-close", "cleanup"]  # gate after the injection
 assert log[1][2] == 1500 + 120 and log[1][3] == 900  # the settle counts in the setup timeout; fault duration of the scenario
-assert meta["schedule"] == log[1][4] == c.make_schedule("7:test/pod_failure_hotel_res__r1", 720, (60, 60), [10, 30], [0])
+assert meta["inject_rate"] in (10, 30) and c.rate_at(meta["schedule"], 120) == meta["inject_rate"]
+assert meta["schedule"] == log[1][4] == c.make_schedule("7:test/pod_failure_hotel_res__r1", 720, (60, 60), [10, 30], [0],
+                                                       inject=(120, meta["inject_rate"]))
 assert meta["split"] == "test" and meta["rates"] == [10, 30] and meta["images"] == ["img"] and meta["missing_logs"] == {}
 assert meta["traces"] == 5 and meta["jaeger_full_blocks"] == [] and meta["trace_sampling"] == 1.0
 sleep = next(e for e in log if isinstance(e, tuple) and e[0] == "sleep")
@@ -267,7 +299,8 @@ d, log = deps(now=lambda: 4200.0, sleep=lambda s: log_sleep.append(s))
 log_sleep.clear()
 _, meta, _ = attempt(d, {**run, "kind": "clean", "id": "clean/noop__r1"})
 assert log_sleep == [4136.0 + 1200 - 4200.0]  # a clean session has its own, longer observation
-assert meta["split"] == "train" and meta["rates"] == [10, 30]
+assert meta["split"] == "train" and meta["rates"] == [10, 30] and meta["inject_rate"] is None  # clean sessions keep their drawn load
+assert meta["schedule"] == c.make_schedule("7:clean/noop__r1", 120 + 1200, (60, 60), [10, 30], [0])
 
 d, log = deps()
 _, meta, _ = attempt(d, {**run, "kind": "clean", "id": "clean/noop__r12", "rep": 12})
@@ -298,5 +331,32 @@ d, log = deps(cleanup=lambda: 1 / 0)
 _, meta, folder = attempt(d)
 assert "cleanup" in meta["export_errors"] and (folder / "meta.json").exists()
 assert not (folder / "meta.json.tmp").exists()
+
+
+# --- level at the injection: the reps of a scenario take different levels, valid reps keep theirs
+def put_rep(kind_dir, stem, rep, rate, status="valid", attempt="attempt-1"):
+    folder = kind_dir / f"{stem}__r{rep}" / attempt
+    folder.mkdir(parents=True)
+    (folder / "meta.json").write_text(json.dumps({"rep": rep, "status": status, "settle_s": 300, "schedule": f"400:{rate}:0,900:10:0"}))
+
+
+def levels(kind_dir, stem, reps, kind="test"):
+    return {r: c.injection_level({"id": f"{kind}/{stem}__r{r}", "rep": r}, kind_dir, R, reps, 300, 0) for r in range(1, reps + 1)}
+
+
+kd = Path(tempfile.mkdtemp())
+put_rep(kd, "net_x", 1, 80)
+put_rep(kd, "net_x", 2, 160, status="invalid")  # a failed attempt holds no level
+put_rep(kd, "net_x_long", 1, 10)  # another scenario whose name starts the same
+got = levels(kd, "net_x", 5)
+assert sorted(got[r] for r in (2, 3, 4, 5)) == [10, 20, 40, 160]
+put_rep(kd, "net_x", 3, got[3], attempt="attempt-2")  # r3 turns valid at its level: the others keep theirs
+assert all(levels(kd, "net_x", 5)[r] == got[r] for r in (2, 4, 5))
+put_rep(kd, "net_y", 1, 57)  # injected during a ramp before this existed: an intermediate level takes no full level away
+put_rep(kd, "net_y", 2, 40)
+pending = [levels(kd, "net_y", 5)[r] for r in (3, 4, 5)]
+assert len(set(pending)) == 3 and 40 not in pending
+assert len(set(levels(Path(tempfile.mkdtemp()), "dev_z", 2, "dev").values())) == 2  # the two dev reps differ
+assert sorted(levels(Path(tempfile.mkdtemp()), "fresh", 5).values()) == R  # a scenario with no valid rep covers every level once
 
 print("ok")
