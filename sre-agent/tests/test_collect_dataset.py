@@ -350,8 +350,9 @@ put_rep(kd, "net_x", 2, 160, status="invalid")  # a failed attempt holds no leve
 put_rep(kd, "net_x_long", 1, 10)  # another scenario whose name starts the same
 got = levels(kd, "net_x", 5)
 assert sorted(got[r] for r in (2, 3, 4, 5)) == [10, 20, 40, 160]
-put_rep(kd, "net_x", 3, got[3], attempt="attempt-2")  # r3 turns valid at its level: the others keep theirs
-assert all(levels(kd, "net_x", 5)[r] == got[r] for r in (2, 4, 5))
+put_rep(kd, "net_x", 3, got[3], attempt="attempt-2")  # r3 turns valid at its level
+# The pending reps may swap levels (the missing ones are reshuffled), but they never take a level a valid rep already has
+assert sorted(levels(kd, "net_x", 5)[r] for r in (2, 4, 5)) == sorted(set(R) - {80, got[3]})
 put_rep(kd, "net_y", 1, 57)  # injected during a ramp before this existed: an intermediate level takes no full level away
 put_rep(kd, "net_y", 2, 40)
 pending = [levels(kd, "net_y", 5)[r] for r in (3, 4, 5)]
