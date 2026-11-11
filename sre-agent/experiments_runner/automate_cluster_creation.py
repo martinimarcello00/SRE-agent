@@ -288,10 +288,6 @@ def setup_cluster_and_aiopslab(
     
     logger.info("Kind cluster created successfully")
     
-    # Give cluster a moment to stabilize
-    logger.info("Waiting 30 seconds for cluster to stabilize...")
-    time.sleep(30)
-    
     # Step 2: Optional - Configure registry with cluster
     if enable_local_registry:
         logger.info("=== STEP 2: Configure local registry ===")

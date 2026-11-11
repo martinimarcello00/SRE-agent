@@ -37,7 +37,7 @@ def load_fault_scenarios(scenarios_dir=None, only_executable=True):
             with open(json_file, 'r') as f:
                 scenario = json.load(f)
                 scenario['_source_file'] = json_file.name
-                if scenario.get("execute", False) and only_executable:
+                if scenario.get("execute", False) or not only_executable:
                     scenarios.append(scenario)
                 else:
                     logger.warning(

@@ -63,6 +63,8 @@ assert list(failed(traces=lambda svc: [])) == ["C6"]
 assert list(failed(traces=lambda svc: [{"spans": [{"startTime": int((time.time() - 900) * 1e6)}]}])) == ["C6"]  # stale
 assert failed(s={**scenario, "scenario": "Hotel Reservation"}, traces=lambda svc: []) == {}  # C6 only with continuous load
 assert list(failed(prom_up=lambda: False)) == ["C7"]
+queries = []
+assert failed(traces=lambda svc: queries.append(svc) or fresh) == {} and queries == ["frontend-proxy"]  # C5 and C6 share one query
 
 
 def boom():
@@ -102,3 +104,37 @@ os.environ["SKIP_READINESS_GATE"] = "1"
 assert r.wait_until_ready(scenario, bad, sleep=lambda s: 1 / 0, clock=lambda: 0, **args) == {}
 del os.environ["SKIP_READINESS_GATE"]
 assert r.wait_until_ready(scenario, bad, sleep=lambda s: None, clock=iter([0, 999]).__next__, **args)  # back to normal
+
+# collection environment: C6 on every app, C10 traffic at the entry point, C11 Chaos Mesh experiments
+hotel = {"scenario": "Hotel Reservation", "target_namespace": "test-hotel-reservation", "service_starting_point": "frontend",
+         "target": "user", "fault_duration": 900}
+traffic = lambda rx: (lambda q: [{"value": [0, str(rx)]}])
+injected = lambda *statuses: (lambda ns: [{"metadata": {"name": f"e{i}"}, "status": {"conditions": [{"type": "Selected", "status": "True"}, {"type": "AllInjected", "status": st}]}}
+                                          for i, st in enumerate(statuses)])
+env_args = dict(core=Core(pods=[pod("frontend-1-a")]), traces=lambda svc: fresh, prom_up=lambda: True, prom_query=traffic(15000), chaos=injected("True"))
+
+
+def collecting(s=hotel, **kw):
+    return r.check_environment(s, **{**env_args, **kw})
+
+
+# without the collection environment the new checks do not run, even with broken clients: the benchmark gate is unchanged
+assert collecting(traces=lambda svc: [], prom_query=boom, chaos=boom) == {}
+
+os.environ["AIOPSLAB_WORKLOAD_SCHEDULE"] = "300:20"
+assert collecting() == {}
+assert list(collecting(traces=lambda svc: [])) == ["C6"]  # continuous load now also on Hotel: no fresh trace is a failure
+assert list(collecting(prom_query=traffic(134))) == ["C10"]  # L6: no wrk2 Job, setup still succeeded
+assert list(collecting(prom_query=lambda q: [])) == ["C10"]  # no series at all
+assert list(collecting({**hotel, "min_entry_rx": 20000})) == ["C10"]  # threshold overridable from the scenario
+assert collecting({**hotel, "target": "frontend"}, prom_query=traffic(0)) == {}  # a fault on the entry point may cut its traffic
+assert 'pod=~"frontend-.*"' in (lambda seen: (collecting(prom_query=lambda q: seen.append(q) or [{"value": [0, "9999"]}]), seen[0])[1])([])
+assert list(collecting(prom_query=boom)) == ["C10"]
+
+assert list(collecting(chaos=injected("False"))) == ["C11"]
+assert "e1" in collecting(chaos=injected("True", "False"))["C11"]
+assert list(collecting(chaos=lambda ns: [])) == ["C11"]  # fault_duration says Chaos Mesh, but no experiment exists
+assert collecting({**hotel, "fault_duration": None}, chaos=lambda ns: []) == {}  # not a Chaos Mesh scenario
+assert list(collecting({**hotel, "fault_duration": None}, chaos=injected("False"))) == ["C11"]  # container kill has no fault_duration
+assert r.wait_until_ready(hotel, sleep=lambda s: 1 / 0, **env_args) == {}  # the new clients reach the checks through the poll loop
+del os.environ["AIOPSLAB_WORKLOAD_SCHEDULE"]
