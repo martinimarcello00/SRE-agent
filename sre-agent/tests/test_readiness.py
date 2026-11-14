@@ -137,4 +137,15 @@ assert list(collecting(chaos=lambda ns: [])) == ["C11"]  # fault_duration says C
 assert collecting({**hotel, "fault_duration": None}, chaos=lambda ns: []) == {}  # not a Chaos Mesh scenario
 assert list(collecting({**hotel, "fault_duration": None}, chaos=injected("False"))) == ["C11"]  # container kill has no fault_duration
 assert r.wait_until_ready(hotel, sleep=lambda s: 1 / 0, **env_args) == {}  # the new clients reach the checks through the poll loop
+
+# the gate's trace query covers the last 10 s at each call: a search of the whole store blocks Jaeger's writes for seconds
+starts = []
+bounded = r.bounded_traces(lambda svc: starts.append(os.environ.get("JAEGER_START_US")) or fresh, now=iter([1000.0, 1015.0]).__next__)
+assert bounded("frontend") == fresh and bounded("frontend") == fresh
+assert starts == [str(990 * 10**6), str(1005 * 10**6)] and "JAEGER_START_US" not in os.environ  # a new window per poll, removed after
+os.environ["JAEGER_START_US"] = "123"
+r.bounded_traces(lambda svc: starts.append(os.environ["JAEGER_START_US"]), now=lambda: 1000.0)("frontend")
+assert starts[-1] == str(990 * 10**6) and os.environ.pop("JAEGER_START_US") == "123"  # a value set by someone else comes back
 del os.environ["AIOPSLAB_WORKLOAD_SCHEDULE"]
+r.bounded_traces(lambda svc: starts.append(os.environ.get("JAEGER_START_US")), now=lambda: 1000.0)("frontend")
+assert starts[-1] is None  # outside a collection run the benchmark gate's query is unchanged

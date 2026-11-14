@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 
 MIN_ENTRY_RX = 1000  # B/s: an idle entry point stays under ~150, 10 req/s give 12-20 KB/s (L1, L4, L7 of 2026-11-03)
 CHAOS_PLURALS = ("podchaos", "networkchaos", "stresschaos")
+# A collection run's gate asks Jaeger for the last seconds only. Without start/end Jaeger searches its whole in-memory store
+# (it ignores lookback) and copies every trace under the lock its writes need: on a store of 5-15 min that took 4-8 s, and
+# Jaeger dropped the spans sent meanwhile, right at the fault onset (experiment of 2026-11-14); 10 s took 0.1 s.
+GATE_TRACE_WINDOW_S = 10
 
 
 def _key(name):
@@ -26,6 +30,27 @@ def _targets(s):
 
 def _collection_env():  # set by collect_dataset.py: the benchmark gate stays as it is until its rerun adopts this environment
     return bool(os.environ.get("AIOPSLAB_WORKLOAD_SCHEDULE"))
+
+
+def bounded_traces(get, window_s=GATE_TRACE_WINDOW_S, now=time.time):
+    """`get` (service -> traces) restricted, in a collection run, to the last `window_s` seconds at each call.
+
+    MCP-server's get_jaeger_traces sends start/end when JAEGER_START_US is set; the previous value comes back afterwards.
+    """
+    def traces(svc):
+        if not _collection_env():
+            return get(svc)
+        previous, began = os.environ.get("JAEGER_START_US"), time.monotonic()
+        os.environ["JAEGER_START_US"] = str(int((now() - window_s) * 1e6))
+        try:
+            return get(svc)
+        finally:
+            logger.info("Gate trace query for %s over the last %d s: %.2f s", svc, window_s, time.monotonic() - began)
+            if previous is None:
+                os.environ.pop("JAEGER_START_US", None)
+            else:
+                os.environ["JAEGER_START_US"] = previous
+    return traces
 
 
 def _ready(pod):  # same rule as AIOpsLab KubeCtl.wait_for_ready
@@ -145,5 +170,5 @@ def run_readiness_gate(scenario: dict) -> dict:
     custom = client.CustomObjectsApi(jaeger.k8s_client.api_client)
     chaos = lambda ns: [e for plural in CHAOS_PLURALS
                         for e in custom.list_namespaced_custom_object("chaos-mesh.org", "v1alpha1", ns, plural)["items"]]
-    return wait_until_ready(scenario, jaeger.k8s_client, lambda svc: jaeger.get_jaeger_traces(svc, limit=20, lookback="5m"),
+    return wait_until_ready(scenario, jaeger.k8s_client, bounded_traces(lambda svc: jaeger.get_jaeger_traces(svc, limit=20, lookback="5m")),
                             lambda: bool(prom_query("up")), prom_query=prom_query, chaos=chaos)

@@ -17,6 +17,7 @@ from pathlib import Path
 import random
 import signal
 import subprocess
+import threading
 import time
 from types import SimpleNamespace
 
@@ -36,10 +37,20 @@ EXTRA_SERIES = {  # outside the app namespace: is the host or the load generator
     "extra_up": "up",
     "extra_wrk2": '{__name__=~"container_(cpu_usage_seconds_total|memory_working_set_bytes|network_receive_bytes_total|network_transmit_bytes_total)",%s}' % WRK2_POD,
 }
-# Every trace is kept: 10 s blocks under this limit hold up to 500 traces/s, against 240 req/s at most.
-# A block that reaches the limit lost its oldest traces, and meta.json counts such blocks.
+# Every trace is kept: 10 s blocks under this limit hold up to 500 traces/s, against 240 req/s at most. A block that
+# reaches the limit is asked again second by second (a fault's end can release a burst: network_loss); a full second
+# lost its oldest traces, and meta.json counts such seconds.
 JAEGER_BLOCK_S = 10
+JAEGER_SUB_BLOCK_S = 1
 JAEGER_TRACES_PER_BLOCK = 5000
+# Jaeger's own counts of lost spans, read from its admin port: its collector queue (2000 spans) overflows while the store
+# is busy, the agent's UDP queue overflows, the clients' reporters drop. A collection run is valid only if none of them
+# grew while the load ran: traces are part of the data (2026-11-14: a search of the whole store cost seconds of spans).
+JAEGER_ADMIN_PORT = 14269
+JAEGER_WATCH_S = 10
+JAEGER_LOSS_COUNTERS = ("jaeger_collector_spans_dropped_total", "jaeger_collector_spans_rejected_total",
+                        "jaeger_agent_thrift_udp_server_packets_dropped_total", "jaeger_agent_client_stats_spans_dropped_total")
+JAEGER_INFO_COUNTERS = ("jaeger_collector_spans_received_total",)
 SOCIAL_SAMPLING = 0.6  # share of Social requests traced (the chart's default is 0.01); Hotel traces all of them, its own default
 SETUP_S = 410  # measured on 2026-11-03, cluster to fault without settle; only for the --dry-run estimate
 # Longest wait for AIOpsLab to deploy and inject, settle excluded: the app deploy alone may take up to 900 s on a slow disk
@@ -224,17 +235,64 @@ def jaeger_blocks(start, end, step=JAEGER_BLOCK_S):
 def export_jaeger(jaeger_get, service, start, end, out):
     """Block by block: one request for all the traces of a session can be too much for the API.
 
-    Returns the traces written, the start of each block that reached the limit (traces lost there) and the seconds it took.
-    Blocks are listed by time: a full block during the deploy (Social's graph load) is setup traffic, one under load is data lost.
+    A block that reaches the limit is asked again second by second, and written as those seconds (a trace in two files is
+    read once: the builder dedups by trace id). Returns the traces written, the start of each second still at the limit
+    (traces lost there) and the seconds it took. Full seconds during the deploy (Social's graph load) are setup traffic,
+    under load they are data lost.
     """
+    def get(a, b):
+        return jaeger_get({"service": service, "start": a * 10**6, "end": b * 10**6, "limit": JAEGER_TRACES_PER_BLOCK})
+
     total, full, began = 0, [], time.time()
     for block_start, block_end in jaeger_blocks(start, end):
-        traces = jaeger_get({"service": service, "start": block_start * 10**6, "end": block_end * 10**6, "limit": JAEGER_TRACES_PER_BLOCK})
-        write_gz(Path(out) / "jaeger" / f"{block_start}.json.gz", traces)
-        total += len(traces)
-        if len(traces) >= JAEGER_TRACES_PER_BLOCK:
-            full.append(block_start)
+        traces = get(block_start, block_end)
+        pieces = [(block_start, traces)] if len(traces) < JAEGER_TRACES_PER_BLOCK else \
+            [(a, get(a, b)) for a, b in jaeger_blocks(block_start, block_end, JAEGER_SUB_BLOCK_S)]
+        for piece_start, piece in pieces:
+            write_gz(Path(out) / "jaeger" / f"{piece_start}.json.gz", piece)
+            total += len(piece)
+            if len(piece) >= JAEGER_TRACES_PER_BLOCK:
+                full.append(piece_start)
     return {"traces": total, "full_blocks": full, "seconds": round(time.time() - began, 1)}
+
+
+def loss_counters(metrics_text):
+    """Jaeger's loss and receive counters from its Prometheus text, summed over their labels."""
+    totals = dict.fromkeys(JAEGER_LOSS_COUNTERS + JAEGER_INFO_COUNTERS, 0.0)
+    for line in metrics_text.splitlines():
+        name = line.split("{", 1)[0].split(" ", 1)[0]
+        if name in totals:
+            totals[name] += float(line.rsplit(" ", 1)[1])
+    return totals
+
+
+def jaeger_counters(kubectl, namespace):
+    """Jaeger's pod, restarts and counters, through the API server (no port-forward); {} while Jaeger is not running."""
+    pods = json.loads(kubectl(["get", "pods", "-n", namespace, "-o", "json"]))["items"]
+    pod = next((p for p in pods if p["metadata"]["name"].startswith("jaeger") and p["status"].get("phase") == "Running"), None)
+    if pod is None:
+        return {}
+    name = pod["metadata"]["name"]
+    text = kubectl(["get", "--raw", f"/api/v1/namespaces/{namespace}/pods/{name}:{JAEGER_ADMIN_PORT}/proxy/metrics"])
+    return {"pod": name, "restarts": sum(c.get("restartCount", 0) for c in pod["status"].get("containerStatuses", [])),
+            **loss_counters(text)}
+
+
+def trace_loss(samples, t_load):
+    """Why the run's traces are not whole, from Jaeger's counters sampled as (time, counters): None when they are.
+
+    The baseline is the last sample before the load starts (the deploy may drop spans: Social's graph load), or zero;
+    the end is the last sample, taken at the end of the observation. A restart or a new Jaeger pod wipes the in-memory
+    store, so it fails too.
+    """
+    if not samples:
+        return "Jaeger's counters were never read"
+    before = [c for t, c in samples if t <= t_load]
+    first, last = (before[-1] if before else {}), samples[-1][1]
+    if (first["pod"], first["restarts"]) != (last["pod"], last["restarts"]) if first else last["restarts"]:
+        return f"Jaeger restarted under load ({last['pod']}, {last['restarts']} restarts): its traces were wiped"
+    lost = {k.removeprefix("jaeger_"): round(last[k] - first.get(k, 0.0)) for k in JAEGER_LOSS_COUNTERS if last[k] > first.get(k, 0.0)}
+    return f"Jaeger lost spans under load: {lost}" if lost else None
 
 
 def export_cluster_state(kubectl, namespace, out):
@@ -308,18 +366,23 @@ def run_once(run, attempt_dir, args, deps):
     with patched_env(scenario_env(scenario, schedule, args.settle, args.connections, run_meta_path)):
         deps.refresh_config()
         try:
-            ok = deps.setup(problem_id=scenario["aiopslab_command"], setup_timeout=int(scenario.get("setup_timeout", SETUP_TIMEOUT_S)) + args.settle,
-                            fault_duration=scenario.get("fault_duration"))
-            if not ok:
-                meta["reason"] = "setup failed"
-                return meta["reason"]
-            meta["run_meta"] = json.loads(run_meta_path.read_text())
-            with deps.port_forward(scenario):
-                meta["gate_failures"] = deps.gate(scenario)
-            if meta["gate_failures"]:  # no observation: the run is already invalid, what follows only explains why
-                meta["reason"] = f"readiness gate: {sorted(meta['gate_failures'])}"
-            else:
-                deps.sleep(max(0.0, meta["run_meta"]["t_injected"] + observe_s - deps.now()))
+            # Jaeger's counters are sampled from before the deploy: the load starts inside AIOpsLab's setup
+            with deps.jaeger_watch(namespace) as jaeger_samples:
+                ok = deps.setup(problem_id=scenario["aiopslab_command"], setup_timeout=int(scenario.get("setup_timeout", SETUP_TIMEOUT_S)) + args.settle,
+                                fault_duration=scenario.get("fault_duration"))
+                if not ok:
+                    meta["reason"] = "setup failed"
+                    return meta["reason"]
+                meta["run_meta"] = json.loads(run_meta_path.read_text())
+                with deps.port_forward(scenario):
+                    meta["gate_failures"] = deps.gate(scenario)
+                if meta["gate_failures"]:  # no observation: the run is already invalid, what follows only explains why
+                    meta["reason"] = f"readiness gate: {sorted(meta['gate_failures'])}"
+                else:
+                    deps.sleep(max(0.0, meta["run_meta"]["t_injected"] + observe_s - deps.now()))
+            t_load = meta["run_meta"].get("t_workload", meta["run_meta"]["t_inject"])
+            meta["jaeger_counters"] = {"samples": len(jaeger_samples), "end": jaeger_samples[-1][1] if jaeger_samples else None,
+                                       "before_load": next((c for t, c in reversed(jaeger_samples) if t <= t_load), None)}
             start, end = meta["run_meta"]["t_deployed"] - 60, deps.now()
             meta["t_export"] = end
             try:
@@ -335,8 +398,14 @@ def run_once(run, attempt_dir, args, deps):
                 with deps.port_forward(scenario):  # opened again: nothing needs Jaeger during the observation
                     jaeger = deps.export_jaeger(scenario.get("service_starting_point") or "frontend", start, end, attempt_dir)
                 meta.update(traces=jaeger["traces"], jaeger_full_blocks=jaeger["full_blocks"], jaeger_export_s=jaeger["seconds"])
-            except Exception as e:  # traces only serve later phases: recorded, but the run stays valid
+                full_under_load = [b for b in jaeger["full_blocks"] if b + JAEGER_BLOCK_S > t_load]
+                meta["trace_check"] = trace_loss(jaeger_samples, t_load) or (
+                    f"export seconds at the {JAEGER_TRACES_PER_BLOCK}-trace limit under load: {full_under_load}" if full_under_load else None)
+            except Exception as e:  # traces are part of the data: without them the run is redone
                 meta["export_errors"]["jaeger"] = repr(e)
+                meta["trace_check"] = "Jaeger export failed"
+            if meta["trace_check"]:
+                meta["reason"] = meta["reason"] or f"traces: {meta['trace_check']}"
             meta["status"] = "invalid" if meta["reason"] else "valid"
             return meta["status"]
         except Exception as e:
@@ -369,6 +438,37 @@ def _kubectl(args):
     return subprocess.run(["kubectl", *args], capture_output=True, text=True, timeout=300, check=True).stdout
 
 
+@contextmanager
+def jaeger_watch(read, every=JAEGER_WATCH_S):
+    """Samples `read()` (Jaeger's counters, {} until Jaeger runs) every `every` s in a thread, and once more on exit.
+
+    Yields the list of (time, counters) it fills. A failed read (no cluster yet, API busy) is skipped.
+    """
+    samples, stop = [], threading.Event()
+
+    def sample():
+        try:
+            counters = read()
+            if counters:
+                samples.append((time.time(), counters))
+        except Exception:  # noqa: BLE001 - the next sample tries again
+            pass
+
+    def loop():
+        while not stop.wait(every):
+            sample()
+
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
+    try:
+        yield samples
+    finally:
+        stop.set()
+        thread.join(timeout=every + 60)
+        sample()  # at the end of the observation
+        samples.sort(key=lambda s: s[0])  # a slow read of the thread may land after this one
+
+
 def real_deps():
     from config import AIOPSLAB_DIR  # also puts MCP-server on sys.path
     from api.config_manager import ConfigManager
@@ -397,6 +497,7 @@ def real_deps():
         cleanup=cleanup_cluster,
         gate=run_readiness_gate,
         port_forward=_port_forward,
+        jaeger_watch=lambda ns: jaeger_watch(lambda: jaeger_counters(_kubectl, ns)),
         export_prometheus=lambda ns, start, end, out: export_prometheus(prom_get, ns, start, end, out),
         export_cluster_state=lambda ns, out: export_cluster_state(_kubectl, ns, out),
         export_jaeger=lambda service, start, end, out: export_jaeger(jaeger_get, service, start, end, out),

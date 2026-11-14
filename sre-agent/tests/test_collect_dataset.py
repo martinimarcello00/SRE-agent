@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 from types import SimpleNamespace as NS
 
 import collect_dataset as c
@@ -202,9 +203,70 @@ result = c.export_jaeger(lambda p: seen.append(p) or [{"traceID": "t"}], "fronte
 assert result["traces"] == 70 and result["full_blocks"] == [] and result["seconds"] >= 0
 assert seen[0] == {"service": "frontend", "start": 1000 * 10**6, "end": 1010 * 10**6, "limit": c.JAEGER_TRACES_PER_BLOCK}
 assert (out / "jaeger/1000.json.gz").exists() and (out / "jaeger/1690.json.gz").exists()
-# A block that reaches the limit has lost traces: it is counted
-full = c.export_jaeger(lambda p: [{"traceID": "t"}] * (c.JAEGER_TRACES_PER_BLOCK if p["start"] == 1000 * 10**6 else 3), "frontend", 1000, 1020, out)
-assert full["full_blocks"] == [1000] and full["traces"] == c.JAEGER_TRACES_PER_BLOCK + 3
+# A block that reaches the limit is asked again second by second; only a second still at the limit has lost traces
+LIMIT = c.JAEGER_TRACES_PER_BLOCK
+split_out = Path(tempfile.mkdtemp())
+asked = []
+
+
+def burst(p):  # 10 s block from 1000 full; its seconds hold 900 traces each, except 1004 still at the limit
+    asked.append((p["start"] // 10**6, p["end"] // 10**6))
+    if p["end"] - p["start"] > 10**6:
+        return [{"traceID": "t"}] * (LIMIT if p["start"] == 1000 * 10**6 else 3)
+    return [{"traceID": "t"}] * (LIMIT if p["start"] == 1004 * 10**6 else 900)
+
+
+full = c.export_jaeger(burst, "frontend", 1000, 1020, split_out)
+assert asked == [(1000, 1010), *[(s, s + 1) for s in range(1000, 1010)], (1010, 1020)]
+assert full["full_blocks"] == [1004] and full["traces"] == 9 * 900 + LIMIT + 3
+assert sorted(p.name for p in (split_out / "jaeger").iterdir()) == sorted(f"{s}.json.gz" for s in range(1000, 1011))
+
+# --- Jaeger's own counts of lost spans: read through the API server, summed over labels, checked over the load only
+metrics = ("# HELP jaeger_collector_spans_dropped_total spans.dropped\n"
+           'jaeger_collector_spans_dropped_total{debug="false",format="jaeger",svc="frontend",transport="udp"} 7\n'
+           'jaeger_collector_spans_dropped_total{debug="false",format="jaeger",svc="geo",transport="udp"} 3\n'
+           'jaeger_agent_thrift_udp_server_packets_dropped_total{model="jaeger",protocol="compact"} 0\n'
+           "jaeger_collector_spans_received_total 250\nprocess_cpu_seconds_total 9\n")
+counts = c.loss_counters(metrics)
+assert counts["jaeger_collector_spans_dropped_total"] == 10 and counts["jaeger_collector_spans_received_total"] == 250
+assert counts["jaeger_agent_client_stats_spans_dropped_total"] == 0 and "process_cpu_seconds_total" not in counts
+jaeger_pods = {"items": [{"metadata": {"name": "geo-1"}, "status": {"phase": "Running"}},
+                         {"metadata": {"name": "jaeger-7d85-x"}, "status": {"phase": "Running", "containerStatuses": [{"restartCount": 1}]}}]}
+raw_calls = []
+read = c.jaeger_counters(lambda a: raw_calls.append(a) or (json.dumps(jaeger_pods) if a[:2] == ["get", "pods"] else metrics), "ns")
+assert read["pod"] == "jaeger-7d85-x" and read["restarts"] == 1 and read["jaeger_collector_spans_dropped_total"] == 10
+assert raw_calls[1] == ["get", "--raw", "/api/v1/namespaces/ns/pods/jaeger-7d85-x:14269/proxy/metrics"]
+assert c.jaeger_counters(lambda a: json.dumps({"items": []}), "ns") == {}  # Jaeger not up yet
+
+
+def counters(pod="jaeger-1", restarts=0, **lost):
+    return {"pod": pod, "restarts": restarts, **dict.fromkeys(c.JAEGER_LOSS_COUNTERS + c.JAEGER_INFO_COUNTERS, 0.0),
+            **{f"jaeger_{k}": float(v) for k, v in lost.items()}}
+
+
+assert c.trace_loss([(90, counters()), (100, counters()), (900, counters())], 100) is None
+assert c.trace_loss([(90, counters(collector_spans_dropped_total=40)), (900, counters(collector_spans_dropped_total=40))], 100) is None  # the deploy's
+assert "collector_spans_dropped_total': 25" in c.trace_loss([(90, counters(collector_spans_dropped_total=40)),
+                                                            (900, counters(collector_spans_dropped_total=65))], 100)
+assert "agent_client_stats_spans_dropped_total" in c.trace_loss([(900, counters(agent_client_stats_spans_dropped_total=1))], 100)  # no baseline: since start
+assert "restarted" in c.trace_loss([(90, counters()), (900, counters(restarts=1))], 100)
+assert "restarted" in c.trace_loss([(90, counters()), (900, counters(pod="jaeger-2"))], 100)  # a new pod, an empty store
+assert c.trace_loss([], 100) == "Jaeger's counters were never read"
+
+# The watch samples in a thread from before the deploy, once more at the end, in time order; failed reads are skipped
+reads = iter([{}, RuntimeError("no cluster"), counters(), counters(), counters(), counters(), counters()])
+
+
+def next_read():
+    value = next(reads)
+    if isinstance(value, Exception):
+        raise value
+    return value
+
+
+with c.jaeger_watch(next_read, every=0.05) as watched:
+    time.sleep(0.18)
+assert len(watched) >= 2 and all(w[1]["pod"] == "jaeger-1" for w in watched) and watched == sorted(watched, key=lambda w: w[0])
 
 # --- cluster state: logs of every container, --previous only after a restart, wrk2 included
 pods = {"items": [{"metadata": {"name": "geo-1"}, "spec": {"containers": [{"name": "geo", "image": "img:1"}]},
@@ -252,9 +314,15 @@ def deps(**kw):
         Path(os.environ["AIOPSLAB_RUN_META"]).write_text(json.dumps({"t_deployed": 4000.0, "t_workload": 4010.0, "t_inject": 4130.0, "t_injected": 4136.0}))
         return True
 
+    @contextmanager
+    def jaeger_watch(namespace, samples=kw.pop("samples", None)):  # Jaeger's counters: one sample before the load, one at the end
+        log.append("watch-open")
+        yield samples if samples is not None else [(4005.0, counters()), (5000.0, counters())]
+        log.append("watch-close")
+
     base = dict(margin_s=0, now=lambda: clock["t"], sleep=lambda s: (log.append(("sleep", s)), clock.__setitem__("t", clock["t"] + s)),
                 refresh_config=lambda: log.append("refresh"), provenance=lambda: {"aiopslab": {"sha": "abc"}}, setup=setup,
-                cleanup=lambda: log.append("cleanup"), gate=lambda s: log.append("gate") or {}, port_forward=port_forward,
+                cleanup=lambda: log.append("cleanup"), gate=lambda s: log.append("gate") or {}, port_forward=port_forward, jaeger_watch=jaeger_watch,
                 export_prometheus=lambda *a: log.append("prom") or {"container_threads": 1}, export_cluster_state=lambda *a: log.append("state") or (["img"], {}),
                 export_jaeger=lambda *a: log.append("jaeger") or {"traces": 5, "full_blocks": [], "seconds": 0.1})
     return NS(**{**base, **kw}), log
@@ -278,10 +346,12 @@ d, log = deps()
 result, meta, _ = attempt(d)
 assert result == "valid" and meta["status"] == "valid" and meta["reason"] is None and meta["series"] == {"container_threads": 1}
 order = [e if isinstance(e, str) else e[0] for e in log]
-assert order == ["refresh", "setup", "pf-open", "gate", "pf-close", "sleep", "prom", "state", "pf-open", "jaeger", "pf-close", "cleanup"]  # gate after the injection
-assert log[1][2] == 1500 + 120 and log[1][3] == 900  # the settle counts in the setup timeout; fault duration of the scenario
+assert order == ["refresh", "watch-open", "setup", "pf-open", "gate", "pf-close", "sleep", "watch-close",  # gate after the injection
+                 "prom", "state", "pf-open", "jaeger", "pf-close", "cleanup"]  # Jaeger's counters watched from the deploy to the observation's end
+assert meta["trace_check"] is None and meta["jaeger_counters"]["samples"] == 2 and meta["jaeger_counters"]["before_load"]["pod"] == "jaeger-1"
+assert log[2][2] == 1500 + 120 and log[2][3] == 900  # the settle counts in the setup timeout; fault duration of the scenario
 assert meta["inject_rate"] in (10, 30) and c.rate_at(meta["schedule"], 120) == meta["inject_rate"]
-assert meta["schedule"] == log[1][4] == c.make_schedule("7:test/pod_failure_hotel_res__r1", 720, (60, 60), [10, 30], [0],
+assert meta["schedule"] == log[2][4] == c.make_schedule("7:test/pod_failure_hotel_res__r1", 720, (60, 60), [10, 30], [0],
                                                        inject=(120, meta["inject_rate"]))
 assert meta["split"] == "test" and meta["rates"] == [10, 30] and meta["images"] == ["img"] and meta["missing_logs"] == {}
 assert meta["traces"] == 5 and meta["jaeger_full_blocks"] == [] and meta["trace_sampling"] == 1.0
@@ -320,8 +390,24 @@ _, meta, _ = attempt(d)
 assert meta["status"] == "invalid" and meta["reason"] == "Prometheus export failed" and "division" in meta["export_errors"]["prometheus"]
 
 d, log = deps(export_jaeger=lambda *a: 1 / 0)
-_, meta, _ = attempt(d)
-assert meta["status"] == "valid" and "jaeger" in meta["export_errors"]  # traces serve later phases: the run stays valid
+result, meta, _ = attempt(d)
+assert result == "invalid" and meta["reason"] == "traces: Jaeger export failed" and "jaeger" in meta["export_errors"]  # traces are data
+
+# Traces must be whole while the load runs: spans Jaeger dropped, a restart, a second at the export limit, each redoes the run
+d, log = deps(samples=[(4005.0, counters()), (5000.0, counters(collector_spans_dropped_total=1200))])
+result, meta, _ = attempt(d)
+assert result == "invalid" and meta["reason"].startswith("traces: Jaeger lost spans under load") and "1200" in meta["reason"]
+d, log = deps(samples=[(3990.0, counters(collector_spans_dropped_total=300)), (5000.0, counters(collector_spans_dropped_total=300))])
+assert attempt(d)[0] == "valid"  # dropped during the deploy (Social's graph load), before the load: the data is whole
+d, log = deps(samples=[(4005.0, counters()), (5000.0, counters(restarts=1))])
+assert "restarted" in attempt(d)[1]["reason"]
+d, log = deps(export_jaeger=lambda *a: {"traces": 5, "full_blocks": [4050], "seconds": 0.1})
+result, meta, _ = attempt(d)
+assert result == "invalid" and "limit under load: [4050]" in meta["reason"]
+d, log = deps(export_jaeger=lambda *a: {"traces": 5, "full_blocks": [3950], "seconds": 0.1})
+assert attempt(d)[0] == "valid"  # a full block of the deploy is setup traffic
+d, log = deps(samples=[])
+assert attempt(d)[1]["reason"] == "traces: Jaeger's counters were never read"
 
 d, log = deps(gate=lambda s: 1 / 0)
 result, meta, _ = attempt(d)
