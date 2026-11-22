@@ -13,7 +13,7 @@ from evaluation.evaluation import normalize_service
 logger = logging.getLogger(__name__)
 
 MIN_ENTRY_RX = 1000  # B/s: an idle entry point stays under ~150, 10 req/s give 12-20 KB/s (L1, L4, L7 of 2026-11-03)
-CHAOS_PLURALS = ("podchaos", "networkchaos", "stresschaos")
+CHAOS_PLURALS = ("podchaos", "networkchaos", "stresschaos", "iochaos")
 # A collection run's gate asks Jaeger for the last seconds only. Without start/end Jaeger searches its whole in-memory store
 # (it ignores lookback) and copies every trace under the lock its writes need: on a store of 5-15 min that took 4-8 s, and
 # Jaeger dropped the spans sent meanwhile, right at the fault onset (experiment of 2026-11-14); 10 s took 0.1 s.
