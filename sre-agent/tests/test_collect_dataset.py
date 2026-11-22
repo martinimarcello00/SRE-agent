@@ -78,13 +78,14 @@ for i in range(300):
 
 # --- clean sessions: split fixed by repetition number before collecting, the last two test sessions on unseen load levels
 assert [c.clean_split(r, [6, 2, 4], 2) for r in range(1, 13)] == ["train"] * 6 + ["val"] * 2 + ["test"] * 2 + ["test-unseen"] * 2
+assert [c.clean_split(r, [6, 2, 4], 2) for r in (13, 21)] == ["train", "train"]  # sessions added later only grow train
+assert c.parse_args(["--app", "hotel", "--out", "/r", "--rates", "10", "--clean", "21", "--rates-unseen", "20"]).clean == 21
 args = c.parse_args(["--app", "hotel", "--out", "rel/raw", "--rates", "10,30", "--rates-unseen", "20,45"])
 assert args.out.is_absolute() and args.mixes == [0, 1, 2, 3] and args.segment == [120, 480] and args.split == [6, 2, 4]
 assert c.parse_args(["--app", "social", "--out", "/r", "--rates", "10", "--clean", "2"]).mixes == [0, 1, 2]  # a pilot needs no unseen levels
 for bad in (["--app", "hotel", "--out", "/r", "--rates", "10,30"],  # sessions 11 and 12 without unseen levels
             ["--app", "hotel", "--out", "/r", "--rates", "10,30", "--rates-unseen", "30,45"],  # an unseen level that training sees
-            ["--app", "social", "--out", "/r", "--rates", "10", "--clean", "2", "--mixes", "3"],  # Social has mixes 0..2
-            ["--app", "hotel", "--out", "/r", "--rates", "10", "--clean", "13", "--rates-unseen", "20"]):  # more sessions than the split
+            ["--app", "social", "--out", "/r", "--rates", "10", "--clean", "2", "--mixes", "3"]):  # Social has mixes 0..2
     try:
         c.parse_args(bad)
         raise AssertionError(f"accepted {bad}")

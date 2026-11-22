@@ -123,9 +123,10 @@ def clean_split(rep, split, unseen):
     """Split of clean session `rep`, fixed before collecting: train, val, then test.
 
     The last `unseen` test sessions draw their rates from levels never used in training.
+    Sessions added after the split (rep beyond its total) are train: the ones already collected keep their label.
     """
     train, val, test = split
-    if rep <= train:
+    if rep <= train or rep > train + val + test:
         return "train"
     if rep <= train + val:
         return "val"
@@ -535,8 +536,8 @@ def parse_args(argv=None):
     args.mixes = args.mixes or list(range(MIXES[args.app]))
     if max(args.mixes) >= MIXES[args.app] or min(args.mixes) < 0:
         p.error(f"--mixes: the {args.app} wrk2 script has mixes 0..{MIXES[args.app] - 1}")
-    if len(args.split) != 3 or args.clean > sum(args.split):
-        p.error("--split needs train,val,test with at least --clean sessions in all")
+    if len(args.split) != 3:
+        p.error("--split needs train,val,test")
     unseen = [r for r in range(1, args.clean + 1) if clean_split(r, args.split, args.unseen_sessions) == "test-unseen"]
     if unseen and (not args.rates_unseen or set(args.rates_unseen) & set(args.rates)):
         p.error(f"clean sessions {unseen} need --rates-unseen, with no level in common with --rates")
