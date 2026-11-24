@@ -119,14 +119,16 @@ def injection_level(run, kind_dir, rates, reps, settle_s, seed):
     return missing[pending.index(run["rep"]) % len(missing)] if run["rep"] in pending else missing[0]
 
 
-def clean_split(rep, split, unseen):
+def clean_split(rep, split, unseen, added="train"):
     """Split of clean session `rep`, fixed before collecting: train, val, then test.
 
     The last `unseen` test sessions draw their rates from levels never used in training.
-    Sessions added after the split (rep beyond its total) are train: the ones already collected keep their label.
+    Sessions added after the split (rep beyond its total) take `added`: the ones already collected keep their label.
     """
     train, val, test = split
-    if rep <= train or rep > train + val + test:
+    if rep > train + val + test:
+        return added
+    if rep <= train:
         return "train"
     if rep <= train + val:
         return "val"
@@ -349,7 +351,7 @@ def run_once(run, attempt_dir, args, deps):
     scenario, attempt_dir = run["scenario"], Path(attempt_dir)
     namespace = scenario["target_namespace"]
     observe_s = args.observe_clean if run["kind"] == "clean" else args.observe
-    split = clean_split(run["rep"], args.split, args.unseen_sessions) if run["kind"] == "clean" else run["kind"]
+    split = clean_split(run["rep"], args.split, args.unseen_sessions, args.added_split) if run["kind"] == "clean" else run["kind"]
     rates = args.rates_unseen if split == "test-unseen" else args.rates
     inject_rate = None if run["kind"] == "clean" else injection_level(
         run, attempt_dir.parents[1], rates, args.reps if run["kind"] == "test" else args.dev_reps, args.settle, args.seed)
@@ -520,6 +522,8 @@ def parse_args(argv=None):
     p.add_argument("--ramp-share", type=float, default=0.5, help="share of the rate changes made as a ramp of 30 s steps")
     p.add_argument("--split", type=ints, default=[6, 2, 4], help="clean sessions for train, val and test, assigned by repetition number")
     p.add_argument("--unseen-sessions", type=int, default=2, help="last clean test sessions that use --rates-unseen")
+    p.add_argument("--added-split", choices=["train", "test", "test-unseen"], default="train",
+                   help="split of the clean sessions added after --split (repetition beyond its total)")
     p.add_argument("--observe", type=int, default=900, help="seconds observed after the injection in test and dev runs")
     p.add_argument("--observe-clean", type=int, default=5400, help="seconds observed in a clean session")
     p.add_argument("--connections", type=int, default=128,
@@ -538,7 +542,7 @@ def parse_args(argv=None):
         p.error(f"--mixes: the {args.app} wrk2 script has mixes 0..{MIXES[args.app] - 1}")
     if len(args.split) != 3:
         p.error("--split needs train,val,test")
-    unseen = [r for r in range(1, args.clean + 1) if clean_split(r, args.split, args.unseen_sessions) == "test-unseen"]
+    unseen = [r for r in range(1, args.clean + 1) if clean_split(r, args.split, args.unseen_sessions, args.added_split) == "test-unseen"]
     if unseen and (not args.rates_unseen or set(args.rates_unseen) & set(args.rates)):
         p.error(f"clean sessions {unseen} need --rates-unseen, with no level in common with --rates")
     return args

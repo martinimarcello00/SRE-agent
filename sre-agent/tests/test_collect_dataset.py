@@ -78,14 +78,17 @@ for i in range(300):
 
 # --- clean sessions: split fixed by repetition number before collecting, the last two test sessions on unseen load levels
 assert [c.clean_split(r, [6, 2, 4], 2) for r in range(1, 13)] == ["train"] * 6 + ["val"] * 2 + ["test"] * 2 + ["test-unseen"] * 2
-assert [c.clean_split(r, [6, 2, 4], 2) for r in (13, 21)] == ["train", "train"]  # sessions added later only grow train
+assert [c.clean_split(r, [6, 2, 4], 2) for r in (13, 21)] == ["train", "train"]  # sessions added later grow train by default
+assert [c.clean_split(r, [6, 2, 4], 2, "test-unseen") for r in (6, 11, 22)] == ["train", "test-unseen", "test-unseen"]
+assert [c.clean_split(r, [6, 2, 4], 2, "test") for r in (8, 12, 30)] == ["val", "test-unseen", "test"]
 assert c.parse_args(["--app", "hotel", "--out", "/r", "--rates", "10", "--clean", "21", "--rates-unseen", "20"]).clean == 21
 args = c.parse_args(["--app", "hotel", "--out", "rel/raw", "--rates", "10,30", "--rates-unseen", "20,45"])
 assert args.out.is_absolute() and args.mixes == [0, 1, 2, 3] and args.segment == [120, 480] and args.split == [6, 2, 4]
 assert c.parse_args(["--app", "social", "--out", "/r", "--rates", "10", "--clean", "2"]).mixes == [0, 1, 2]  # a pilot needs no unseen levels
 for bad in (["--app", "hotel", "--out", "/r", "--rates", "10,30"],  # sessions 11 and 12 without unseen levels
             ["--app", "hotel", "--out", "/r", "--rates", "10,30", "--rates-unseen", "30,45"],  # an unseen level that training sees
-            ["--app", "social", "--out", "/r", "--rates", "10", "--clean", "2", "--mixes", "3"]):  # Social has mixes 0..2
+            ["--app", "social", "--out", "/r", "--rates", "10", "--clean", "2", "--mixes", "3"],  # Social has mixes 0..2
+            ["--app", "hotel", "--out", "/r", "--rates", "10", "--clean", "3", "--split", "1,1,0", "--added-split", "test-unseen"]):  # added unseen sessions without unseen levels
     try:
         c.parse_args(bad)
         raise AssertionError(f"accepted {bad}")
@@ -329,7 +332,7 @@ def deps(**kw):
     return NS(**{**base, **kw}), log
 
 
-args = NS(settle=120, segment=(60, 60), rates=[10, 30], rates_unseen=[20], mixes=[0], ramp_share=0.0, split=[6, 2, 4], unseen_sessions=2,
+args = NS(settle=120, segment=(60, 60), rates=[10, 30], rates_unseen=[20], mixes=[0], ramp_share=0.0, split=[6, 2, 4], unseen_sessions=2, added_split="train",
           observe=600, observe_clean=1200, connections=4, seed=7, reps=5, dev_reps=2)
 scenario = {"aiopslab_command": "pod_failure_hotel_res-detection-1", "target_namespace": "ns", "service_starting_point": "frontend",
             "scenario": H, "fault_type": "Pod failure", "target": "user", "accepted_targets": None, "fault_duration": 900}
